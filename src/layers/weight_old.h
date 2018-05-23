@@ -1,10 +1,20 @@
 #pragma once
 
+// #include "marian.h"
+// #include "common/definitions.h"
+// #include "common/logging.h"
 #include "common/options.h"
 #include "graph/expression_graph.h"
 #include "graph/expression_operators.h"
 #include "graph/node_initializers.h"
+// #include "common/definitions.h"
 #include "data/corpus.h"
+// #include "layers/constructors.h"
+// #include "layers/generic.h"
+// #include "layers/guided_alignment.h"
+// #include "layers/factory.h"
+// #include "layers/param_initializers.h"
+//
 
 namespace marian {
 
@@ -39,12 +49,11 @@ protected:
   std::vector<float> mapWords(Ptr<data::CorpusBatch> batch);
 
 public:
-  DynamicWeighting(int vocabSize) : WeightingBase() { wordFreqs_.resize(vocabSize); };
+  DynamicWeighting() : WeightingBase() { wordFreqs_.resize(1000); };
   Expr getWeights(Ptr<ExpressionGraph> graph, Ptr<data::CorpusBatch> batch);
   void debugWeighting(std::vector<float> weightedMask,
                       std::vector<float> freqMask,
                       Ptr<data::CorpusBatch> batch) override;
 };
-
 Ptr<WeightingBase> WeightingFactory(Ptr<Options> options);
 }

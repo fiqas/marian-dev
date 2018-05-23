@@ -543,6 +543,8 @@ void ConfigParser::addOptionsTraining(po::options_description& desc) {
      "File with sentence or word weights")
     ("data-weighting-type", po::value<std::string>()->default_value("sentence"),
      "Processing level for data weighting. Possible values: sentence, word")
+    ("dynamic-weighting", po::value<bool>()->zero_tokens()->default_value(false),
+     "Dynamic weighting on word level during training")
 
     //("drop-rate", po::value<double>()->default_value(0),
     // "Gradient drop ratio (read: https://arxiv.org/abs/1704.05021)")
@@ -924,6 +926,7 @@ void ConfigParser::parseOptions(int argc, char** argv, bool doValidate) {
     SET_OPTION("guided-alignment-weight", double);
     SET_OPTION_NONDEFAULT("data-weighting", std::string);
     SET_OPTION("data-weighting-type", std::string);
+    SET_OPTION("dynamic-weighting", bool);
 
     // SET_OPTION("drop-rate", double);
     SET_OPTION_NONDEFAULT("embedding-vectors", std::vector<std::string>);

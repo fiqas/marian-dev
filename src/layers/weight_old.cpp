@@ -5,11 +5,9 @@ namespace marian {
 Ptr<WeightingBase> WeightingFactory(Ptr<Options> options) {
   if(options->has("data-weighting"))
     return New<DataWeighting>(options->get<std::string>("data-weighting-type"));
-  else if(options->has("dynamic-weighting") && options->get<bool>("dynamic-weighting")) {
-    auto vocabSize = options->get<std::vector<int>>("dim-vocabs").back();
-    std::cerr << "vocabSize"  << vocabSize << std::endl;
-    return New<DynamicWeighting>(vocabSize);
-  }
+  // else if(options->get<bool>("dynamic-weighting"))
+  else if(options->has("dynamic-weighting") && options->get<bool>("dynamic-weighting"))
+    return New<DynamicWeighting>();
 }
 
 Expr DataWeighting::getWeights(Ptr<ExpressionGraph> graph,
@@ -19,31 +17,47 @@ Expr DataWeighting::getWeights(Ptr<ExpressionGraph> graph,
   bool sentenceWeighting = weightingType_ == "sentence";
   int dimBatch = batch->size();
   int dimWords = sentenceWeighting ? 1 : batch->back()->batchWidth();
-  auto weights = graph->constant({1, dimWords, dimBatch, 1},
-                                 inits::from_vector(batch->getDataWeights()));
+  auto weights = graph->constant(
+      {1, dimWords, dimBatch, 1},
+      inits::from_vector(batch->getDataWeights()));
   return weights;
 }
 
 void DynamicWeighting::updateWordFrequencies(Ptr<data::CorpusBatch> batch) {
+  // std::cerr << "wordFreq size before " << wordFreqs_.size() << std::endl;
   auto sb = batch->back();
   for(size_t i = 0; i < sb->data().size(); i++) {
     Word w = sb->data()[i];
-    // if(wordFreqs_.size() < w && w != 0) {
-      // wordFreqs_.resize(w);
-    // }
+    // std::cerr << "word id " << w << std::endl;
+    if(wordFreqs_.size() < w && w != 0) {
+      wordFreqs_.resize(w);
+      // std::cerr << "wordFreq size after resizing " << wordFreqs_.size()
+      // << std::endl;
+    }
     wordFreqs_[w]++;
   }
 }
 
 float DynamicWeighting::weightFrequency(int64_t freq) {
+  // float a = -0.07593015;
+  // float b = 0.9990619;
+  // float c = 2.09397751;
   float a = 10.0f;
   float b = 1.0f / 4.0f;
   float c = 1.0f;
 
+  // std::cerr << "before static_cast " << freq << std::endl;
+
   float floatFreq = static_cast<float>(freq);
+  // std::cerr << "after static cast " << floatFreq << std::endl;
 
   if(freq != 0.0f) {
+    // auto result = a * std::log(b * floatFreq) + c;
       auto result = a / (std::pow(floatFreq, b) * c);
+    // if(!std::isfinite(result))
+    // std::cerr << "NAN " << freq << " " << result << std::endl;
+    // else
+    // std::cerr << "NORMAL " << freq << " " << result << std::endl;
     return result;
   } else
     return 0.0f;
@@ -74,10 +88,17 @@ std::vector<float> DynamicWeighting::weightWords(Ptr<data::CorpusBatch> batch) {
   size_t batchLength = sb->batchWidth() * sb->batchSize();
   size_t batchLength2 = sb->data().size();
 
+  // std::cerr << "batch Length " << batchLength << " " << batchLength2
+  // << std::endl;
   std::vector<float> weightedMask(batchLength);
   for(size_t i = 0; i < batchLength; i++) {
+    // std::cerr << "trying to get element " << i << std::endl;
     Word w = sb->data()[i];
+    // std::cerr << "trying to weight element " << i << std::endl;
+    // std::cerr << "weightedMask size " << weightedMask.size() << std::endl;
+    // std::cerr << "wordFreqs size " << wordFreqs_.size() << w << std::endl;
     weightedMask[i] = weightFrequency(wordFreqs_[w]);
+    // std::cerr << "after weightFrequency " << i << std::endl;
   }
   return weightedMask;
 }
@@ -89,8 +110,14 @@ Expr DynamicWeighting::getWeights(Ptr<ExpressionGraph> graph,
   int dimWords = batch->back()->batchWidth();
   size_t batchLength = sb->batchWidth() * sb->batchSize();
 
+  // std::cerr << "before update freqs" << std::endl;
   updateWordFrequencies(batch);
+  // std::cerr << "before mapWords" << std::endl;
+  // auto freqVector = mapWords(batch);
+  // std::cerr << "before weightWords" << std::endl;
   auto weightsVector = weightWords(batch);
+  // std::cerr << "after weightWords" << std::endl;
+
   // debugWeighting(weightsVector, freqVector, batch);
 
   Expr weights
@@ -135,5 +162,4 @@ void DynamicWeighting::debugWeighting(std::vector<float> weightedMask,
     std::cerr << std::endl;
   }
 }
-
 }
