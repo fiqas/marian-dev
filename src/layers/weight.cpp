@@ -5,10 +5,26 @@ namespace marian {
 Ptr<WeightingBase> WeightingFactory(Ptr<Options> options) {
   if(options->has("data-weighting"))
     return New<DataWeighting>(options->get<std::string>("data-weighting-type"));
-  else if(options->has("dynamic-weighting") && options->get<bool>("dynamic-weighting")) {
+  else if(options->has("dynamic-weighting")
+          && options->get<bool>("dynamic-weighting")) {
     auto vocabSize = options->get<std::vector<int>>("dim-vocabs").back();
-    std::cerr << "vocabSize"  << vocabSize << std::endl;
-    return New<DynamicWeighting>(vocabSize);
+    auto params = options->get<std::vector<float>>("dynamic-weighting-params");
+    std::cerr << " Params before passing: ";
+    for(size_t i = 0; i < params.size(); i++) {
+      std::cerr << " " << params[i];
+    }
+    std::cerr << std::endl;
+    auto type = options->get<std::string>("dynamic-weighting-type");
+    std::cerr << "Vocabulary size: " << vocabSize << std::endl;
+    if(type == "exp") {
+      std::cerr << "Weighting type: exp" << std::endl;
+      return New<ExponentialWeighting>(vocabSize, params);
+    } else if(type == "inv-sqrt") {
+      std::cerr << "Weighting type: inv_sqrt" << std::endl;
+      return New<InvSqrtWeighting>(vocabSize, params);
+    } else
+      return New<DynamicWeighting>(vocabSize, params);
+    std::cerr << "Weighting type: NONE, weighting set to 1" << std::endl;
   }
 }
 
@@ -29,24 +45,17 @@ void DynamicWeighting::updateWordFrequencies(Ptr<data::CorpusBatch> batch) {
   for(size_t i = 0; i < sb->data().size(); i++) {
     Word w = sb->data()[i];
     // if(wordFreqs_.size() < w && w != 0) {
-      // wordFreqs_.resize(w);
+    // std::cerr << "RESIZEEEEE" << std::endl;
+    // wordFreqs_.resize(w);
     // }
     wordFreqs_[w]++;
   }
 }
 
 float DynamicWeighting::weightFrequency(int64_t freq) {
-  float a = 10.0f;
-  float b = 1.0f / 4.0f;
-  float c = 1.0f;
-
   float floatFreq = static_cast<float>(freq);
-
-  if(freq != 0.0f) {
-      auto result = a / (std::pow(floatFreq, b) * c);
-    return result;
-  } else
-    return 0.0f;
+  auto result = 1.0f;
+  return result;
 }
 
 // float DynamicWeighting::weightFrequency(float freq) {
@@ -91,11 +100,11 @@ Expr DynamicWeighting::getWeights(Ptr<ExpressionGraph> graph,
 
   updateWordFrequencies(batch);
   auto weightsVector = weightWords(batch);
+  // std::cerr << "before debug" << std::endl;
   // debugWeighting(weightsVector, freqVector, batch);
 
-  Expr weights
-      = graph->constant({1, dimWords, dimBatch, 1},
-                        inits::from_vector(weightsVector));
+  Expr weights = graph->constant({1, dimWords, dimBatch, 1},
+                                 inits::from_vector(weightsVector));
   return weights;
 }
 
@@ -136,4 +145,33 @@ void DynamicWeighting::debugWeighting(std::vector<float> weightedMask,
   }
 }
 
+float ExponentialWeighting::weightFrequency(int64_t freq) {
+  // def exponential_equations_fixed(x, a, b, c, d):
+  // lrate = up * a * np.exp(b * x)
+  // if x > freq:
+  // return c * x + d
+  // return lrate
+
+  float result;
+  float floatFreq = static_cast<float>(freq);
+  // std::cerr << "if floatFreq > " << params_[0] << std::endl;
+  if(floatFreq > params_[0]) {
+    // std::cerr << params_[4] <<  " * floatFreq + " << params_[5] << std::endl;
+    result = params_[4] * floatFreq + params_[5];
+  } else {
+    // std::cerr << params_[1] <<  " * " << params_[2] << " exp(floatFreq * " << params_[3] << ")" << std::endl;
+    result = params_[1] * params_[2] * std::exp(params_[3] * floatFreq);
+  }
+  return result;
+}
+
+float InvSqrtWeighting::weightFrequency(int64_t freq) {
+// def inv_sqrt_equations(x, a, b, c, d):
+// return a / (c * (x**b) + d)
+
+  float result;
+  float floatFreq = static_cast<float>(freq);
+  result = params_[0] / (params_[2] * (floatFreq, params_[1]) + params_[3]);
+  return result;
+}
 }
