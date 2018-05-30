@@ -20,8 +20,11 @@ Ptr<WeightingBase> WeightingFactory(Ptr<Options> options) {
       std::cerr << "Weighting type: exp" << std::endl;
       return New<ExponentialWeighting>(vocabSize, params);
     } else if(type == "inv-sqrt") {
-      std::cerr << "Weighting type: inv_sqrt" << std::endl;
+      std::cerr << "Weighting type: inv-sqrt" << std::endl;
       return New<InvSqrtWeighting>(vocabSize, params);
+    } else if(type == "inv-sqrt-bound") {
+      std::cerr << "Weighting type: inv-sqrt-bound" << std::endl;
+      return New<InvSqrtBoundWeighting>(vocabSize, params);
     } else
       return New<DynamicWeighting>(vocabSize, params);
     std::cerr << "Weighting type: NONE, weighting set to 1" << std::endl;
@@ -159,19 +162,33 @@ float ExponentialWeighting::weightFrequency(int64_t freq) {
     // std::cerr << params_[4] <<  " * floatFreq + " << params_[5] << std::endl;
     result = params_[4] * floatFreq + params_[5];
   } else {
-    // std::cerr << params_[1] <<  " * " << params_[2] << " exp(floatFreq * " << params_[3] << ")" << std::endl;
+    // std::cerr << params_[1] <<  " * " << params_[2] << " exp(floatFreq * " <<
+    // params_[3] << ")" << std::endl;
     result = params_[1] * params_[2] * std::exp(params_[3] * floatFreq);
   }
   return result;
 }
 
 float InvSqrtWeighting::weightFrequency(int64_t freq) {
-// def inv_sqrt_equations(x, a, b, c, d):
-// return a / (c * (x**b) + d)
+  // def inv_sqrt_equations(x, a, b, c, d):
+  // return a / (c * (x**b) + d)
 
   float result;
   float floatFreq = static_cast<float>(freq);
   result = params_[0] / (params_[2] * (floatFreq, params_[1]) + params_[3]);
+  return result;
+}
+
+float InvSqrtBoundWeighting::weightFrequency(int64_t freq) {
+  // def inv_sqrt_equations(x, a, b, c, d):
+  // return a / (c * (x**b) + d)
+
+  float result;
+  float floatFreq = static_cast<float>(freq);
+  if(floatFreq >= params_[0])
+    result = params_[1] / (params_[3] * (params_[0], params_[2]) + params_[4]);
+  else
+    result = params_[1] / (params_[3] * (floatFreq, params_[2]) + params_[4]);
   return result;
 }
 }

@@ -73,5 +73,18 @@ public:
              "Too few hyperparameters for exponential weighting!");
   };
 };
+
+class InvSqrtBoundWeighting : public DynamicWeighting {
+protected:
+  float weightFrequency(int64_t freq);
+
+public:
+  InvSqrtBoundWeighting(int vocabSize, std::vector<float> params)
+      : DynamicWeighting(vocabSize, params) {
+    ABORT_IF(params.size() < 5,
+             "Too few hyperparameters for exponential weighting!");
+  };
+};
+
 Ptr<WeightingBase> WeightingFactory(Ptr<Options> options);
 }
