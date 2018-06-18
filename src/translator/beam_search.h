@@ -36,9 +36,15 @@ public:
                bool first) {
     Beams newBeams(beams.size());
     for(int i = 0; i < keys.size(); ++i) {
+
+      // keys is contains indices to vocab items in the entire beam.
+      // values can be between 0 and beamSize * vocabSize.
       int embIdx = keys[i] % vocabSize;
       int beamIdx = i / beamSize;
 
+      // retrieve short list for final softmax (based on words aligned
+      // to source sentences). If short list has been set, map the indices
+      // in the sub-selected vocabulary matrix back to their original positions.
       auto shortlist = scorers_[0]->getShortlist();
       if(shortlist)
         embIdx = shortlist->reverseMap(embIdx);
@@ -98,7 +104,7 @@ public:
     Histories histories;
     for(int i = 0; i < dimBatch; ++i) {
       size_t sentId = batch->getSentenceIds()[i];
-      auto history = New<History>(sentId, options_->get<float>("normalize"));
+      auto history = New<History>(sentId, options_->get<float>("normalize"), options_->get<float>("word-penalty"));
       histories.push_back(history);
     }
 
@@ -172,9 +178,13 @@ public:
       auto totalCosts = prevCosts;
 
       for(int i = 0; i < scorers_.size(); ++i) {
-        states[i] = scorers_[i]->step(
-            graph, states[i], hypIndices, embIndices, dimBatch, localBeamSize);
-
+        states[i] = scorers_[i]->step(graph,
+                                      states[i],
+                                      hypIndices,
+                                      embIndices,
+                                      dimBatch,
+                                      localBeamSize);
+        
         if(scorers_[i]->getWeight() != 1.f)
           totalCosts
               = totalCosts + scorers_[i]->getWeight() * states[i]->getProbs();
@@ -207,14 +217,13 @@ public:
       nth->getNBestList(beamSizes, totalCosts->val(), outCosts, outKeys, first);
 
       int dimTrgVoc = totalCosts->shape()[-1];
-      beams = toHyps(
-          outKeys, outCosts, dimTrgVoc, beams, states, localBeamSize, first);
+      beams = toHyps(outKeys, outCosts, dimTrgVoc, beams, states, localBeamSize, first);
 
       auto prunedBeams = pruneBeam(beams);
       for(int i = 0; i < dimBatch; ++i) {
         if(!beams[i].empty()) {
           final = final
-                  || histories[i]->size() >= 3 * batch->front()->batchWidth();
+                  || histories[i]->size() >= options_->get<float>("max-length-factor") * batch->front()->batchWidth();
           histories[i]->Add(beams[i], prunedBeams[i].empty() || final);
         }
       }
