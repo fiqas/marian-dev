@@ -264,6 +264,7 @@ public:
   Expr MultiHead(std::string prefix,
                  int dimOut,
                  int dimHeads,
+                 int dimHeadSize,
                  Expr q,             // [-4: beam depth * batch size, -3: num heads, -2: max q length, -1: split vector dim]
                  const Expr &keys,   // [-4: beam depth, -3: batch size, -2: max kv length, -1: vector dim]
                  const Expr &values, // [-4: beam depth, -3: batch size, -2: max kv length, -1: vector dim]
@@ -272,8 +273,8 @@ public:
                  bool saveAttentionWeights = false) {
     int dimModel = q->shape()[-1];
     // @TODO: good opportunity to implement auto-batching here or do something manually?
-    auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimModel}, inits::glorot_uniform);
-    auto bq = graph_->param(prefix + "_bq", {       1, dimModel}, inits::zeros);
+    auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+    auto bq = graph_->param(prefix + "_bq", {       1, dimHeads * dimHeadSize}, inits::zeros);
     auto qh = affine(q, Wq, bq);
     qh = SplitHeads(qh, dimHeads); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
 
@@ -282,8 +283,8 @@ public:
     // @TODO: set this automatically by memoizing encoder context and
     // memoization propagation (short-term)
     if (!cache || (cache && cache_.count(prefix + "_keys") == 0)) {
-      auto Wk = graph_->param(prefix + "_Wk", {dimModel, dimModel}, inits::glorot_uniform);
-      auto bk = graph_->param(prefix + "_bk", {1,        dimModel}, inits::zeros);
+      auto Wk = graph_->param(prefix + "_Wk", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+      auto bk = graph_->param(prefix + "_bk", {1,        dimHeads * dimHeadSize}, inits::zeros);
 
       kh = affine(keys, Wk, bk);     // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
       kh = SplitHeads(kh, dimHeads); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
@@ -295,8 +296,8 @@ public:
 
     Expr vh;
     if (!cache || (cache && cache_.count(prefix + "_values") == 0)) {
-      auto Wv = graph_->param(prefix + "_Wv", {dimModel, dimModel}, inits::glorot_uniform);
-      auto bv = graph_->param(prefix + "_bv", {1,        dimModel}, inits::zeros);
+      auto Wv = graph_->param(prefix + "_Wv", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+      auto bv = graph_->param(prefix + "_bv", {1,        dimHeads * dimHeadSize}, inits::zeros);
 
       vh = affine(values, Wv, bv); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
       vh = SplitHeads(vh, dimHeads);
@@ -339,10 +340,12 @@ public:
     auto opsPre = opt<std::string>("transformer-preprocess");
     auto output = preProcess(prefix + "_Wo", opsPre, input, dropProb);
 
+    // Number of heads
     auto heads = opt<int>("transformer-heads");
+    auto headDim = opt<int>("transformer-head-dim");
 
     // multi-head self-attention over previous input
-    output = MultiHead(prefix, dimModel, heads, output, keys, values, mask, cache, saveAttentionWeights);
+    output = MultiHead(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
 
     auto opsPost = opt<std::string>("transformer-postprocess");
     output = postProcess(prefix + "_Wo", opsPost, output, input, dropProb);
