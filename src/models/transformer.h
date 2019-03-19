@@ -226,7 +226,7 @@ public:
 
   // determine the multiplicative-attention probability and performs the associative lookup as well
   // q, k, and v have already been split into multiple heads, undergone any desired linear transform.
-  Expr Attention(std::string /*prefix*/,
+  Expr Attention(std::string  /*prefix*/,
                  Expr q,              // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: split vector dim]
                  Expr k,              // [-4: batch size, -3: num heads, -2: max src length, -1: split vector dim]
                  Expr v,              // [-4: batch size, -3: num heads, -2: max src length, -1: split vector dim]
@@ -237,16 +237,23 @@ public:
 
     // softmax over batched dot product of query and keys (applied over all
     // time steps and batch entries), also add mask for illegal connections
+    //LOG(info, "Attention Q = {}", q->shape());
+    //LOG(info, "Attention K = {}", k->shape());
+    //LOG(info, "Attention V = {}", v->shape());
 
     // multiplicative attention with flattened softmax
     float scale = 1.0f / std::sqrt((float)dk); // scaling to avoid extreme values due to matrix multiplication
     auto z = bdot(q, k, false, true, scale); // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
+
+    //LOG(info, "Attention Q * K.T shape = {}", z->shape());
+    //LOG(info, "Attention mask.shape = {}", mask->shape());
 
     // mask out garbage beyond end of sequences
     z = z + mask;
 
     // take softmax along src sequence axis (-1)
     auto weights = softmax(z); // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
+    //LOG(info, "softmax(Q * K.T) shape = {}", weights->shape());
 
     if(saveAttentionWeights)
       collectOneHead(weights, dimBeam);
@@ -258,7 +265,354 @@ public:
 
     // apply attention weights to values
     auto output = bdot(weights, v);   // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: split vector dim]
+    //LOG(info, "Attention output = {}", output->shape());
     return output;
+  }
+
+  Expr FingerPuppet(std::string prefix,
+                 int dimOut,
+                 int dimHeads,
+                 int dimHeadSize,
+                 Expr q,             // [-4: beam depth * batch size, -3: num heads, -2: max q length, -1: split vector dim]
+                 const Expr &keys,   // [-4: beam depth, -3: batch size, -2: max kv length, -1: vector dim]
+                 const Expr &values, // [-4: beam depth, -3: batch size, -2: max kv length, -1: vector dim]
+                 const Expr &mask,   // [-4: batch size, -3: num heads broadcast=1, -2: max length broadcast=1, -1: max length]
+                 bool cache = false,
+                 bool saveAttentionWeights = false) {
+    
+    int dimModel = q->shape()[-1];
+    int maxLengthQuery = q->shape()[-2];
+    int maxLengthKeys = keys->shape()[-2];
+    int maxLengthValues = values->shape()[-2];
+    int batchSize = keys->shape()[-3];
+    int beamSize = q->shape()[-4];
+
+    
+    //STEP 1 - Initialize Wq, Wk, Wv
+    //LOG(info, "mask.shape in FingerPuppet {}", mask->shape()); 
+    //LOG(info, "input shape = {}", q->shape());
+    //LOG(info, "dimHeads {} dimHeadSize {}", dimHeads, dimHeadSize);
+    auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+    auto bq = graph_->param(prefix + "_bq", {       1, dimHeads * dimHeadSize}, inits::glorot_uniform);
+   
+    auto Wk = graph_->param(prefix + "_Wk", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+    auto bk = graph_->param(prefix + "_bk", {       1, dimHeads * dimHeadSize}, inits::glorot_uniform);
+    
+    auto Wv = graph_->param(prefix + "_Wv", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+    auto bv = graph_->param(prefix + "_bv", {       1, dimHeads * dimHeadSize}, inits::glorot_uniform);
+
+    //LOG(info, "Wq.shape = {}", Wq->shape());
+    //LOG(info, "bq.shape = {}", bq->shape());
+    
+    // STEP 2 - Split parameters into separate heads
+    
+    auto WqSplit = reshape(Wq, {dimHeads, dimModel, dimHeadSize});
+    auto bqSplit = reshape(bq, {dimHeads, 1, dimHeadSize});
+
+    // debug(bqSplit, "bqSplit");
+
+    auto WkSplit = reshape(Wk, {dimHeads, dimModel, dimHeadSize});
+    auto bkSplit = reshape(bk, {dimHeads, 1, dimHeadSize});
+
+    auto WvSplit = reshape(Wv, {dimHeads, dimModel, dimHeadSize});
+    auto bvSplit = reshape(bv, {dimHeads, 1, dimHeadSize});
+     
+    //LOG(info, "WqSplit.shape = {}", WqSplit->shape());
+    //LOG(info, "bqSplit.shape = {}", bqSplit->shape());
+
+
+    // STEP 3 - Initialize gating (constant for now with random binary, seed is set so should return the same vector every time it runs)
+    // std::mt19937 gen(1811);
+    
+    std::vector<float> gatingInit(dimHeads * batchSize, 1.0);
+    // std::fill_n(gatingInit.begin(), gatingInit.size() * (1 - 0.5), 1.0); //Fill half of values with 1
+
+    // size_t ones = std::count(gatingInit.begin(), gatingInit.end(), 1.0);
+
+    //LOG(info, "vector contains {} ones out of {}", ones, gatingInit.size());
+    //LOG(info, "vector contains {} zeroes out of {}", gatingInit.size() - ones, gatingInit.size());
+
+    // std::shuffle(gatingInit.begin(), gatingInit.end(), gen);
+
+    // std::stringstream ss;
+    // for(size_t i = 0; i < gatingInit.size(); ++i)
+    // {
+        // if(i != 0)
+              // ss << ",";
+          // ss << gatingInit[i];
+    // }
+    // std::string gatingString = ss.str();
+
+    //LOG(info, "gating {}", gatingString);
+    
+    auto gatingOutput = graph_->constant({batchSize, 1, dimHeads}, inits::from_vector(gatingInit));
+
+    //LOG(info, "gatingOutput shape = {}", gatingOutput->shape());
+    // debug(gatingOutput, "gatingOutput");
+
+    // auto hoho = gt(gatingOutput, 0.0);
+    // debug(hoho);
+    
+    // STEP 4 - Unionize the selected heads for all sentences
+    
+    auto gatingSum = sum(gatingOutput, -3);
+    //LOG(info, "gatingSum.shape = {}", gatingSum->shape());
+    // debug(gatingSum);
+
+    auto gatingIndices = reshape(gt(gatingSum, 0), {1, dimHeads});
+    // debug(gatingIndices, "gatingIndices");
+    // std::vector<IndexType> ugh({0,2});
+    // auto ugh = graph_->indices(gatingIndices, 
+    // std::vector<IndexType> gatingIndicesVector;
+
+    // for (IndexType i = 0; i < dimHeads; i++) {
+      // //LOG(info, "i {}", i);
+      // auto value = slice(gatingIndices, 0, i);
+      // //LOG(info, "gatingIndices[i] {}", value);
+      // if (value != 0) {
+        // gatingIndicesVector.push_back(i);
+      // }
+    // }
+    
+    // std::stringstream ss2;
+    // for(size_t i = 0; i < gatingIndicesVector.size(); ++i)
+    // {
+        // if(i != 0)
+              // ss << ",";
+          // ss << gatingIndicesVector[i];
+    // }
+    // std::string gatingString2 = ss2.str();
+
+    // //LOG(info, "gatingIndicesVector {}", gatingString2);
+
+    // //LOG(info, "gatingIndices.shape = {}", gatingIndices->shape());
+    // // debug(gatingIndices);
+
+
+    // STEP 5 - Mask heads for each sentence with the gate's output
+    
+    // Wq
+    auto WqReshaped = reshape(WqSplit, {dimHeads, dimModel * dimHeadSize});
+    //LOG(info, "WqReshaped.shape = {}", WqReshaped->shape());
+
+    auto WqTransposed = transpose(WqReshaped, {1, 0}); // Flip so that every column is a head vector
+    //LOG(info, "WqTransposed.shape = {}", WqTransposed->shape());
+
+    auto WqMasked = transpose(WqTransposed * gatingOutput, {0, 2, 1}); // Broadcast Wq BATCH-WISE, mask and transpose back
+    //LOG(info, "maskedMulti.shape = {}", (WqTransposed * gatingOutput)->shape());
+    //LOG(info, "WqMasked.shape = {}", WqMasked->shape());
+
+    auto bqTransposed = transpose(bqSplit, {1, 2, 0});
+    //LOG(info, "bqTransposed.shape = {}", bqTransposed->shape());
+
+    // debug(bqTransposed, "bqTransposed");
+
+    auto bqMasked = bqTransposed * gatingOutput;
+    // auto bqMasked = transpose(bqTransposed * gatingOutput, {1, 2, 0});
+    //LOG(info, "bqMasked.shape = {}", bqMasked->shape());
+    // debug(bqMasked, "bqMasked");
+  
+    bqMasked = transpose(bqMasked, {0, 2, 1});
+    // auto bqFinal = reshape(transpose(bqMasked, {0, 2, 1}), {batchSize, dimHeads, 1, dimHeadSize});
+
+    // Wk
+    auto WkReshaped = reshape(WkSplit, {dimHeads, dimModel * dimHeadSize});
+    auto WkTransposed = transpose(WkReshaped, {1, 0}); // Flip so that every column is a head vector
+    auto WkMasked = transpose(WkTransposed * gatingOutput, {0, 2, 1}); // Broadcast Wk BATCH-WISE, mask and transpose back
+    
+    auto bkTransposed = transpose(bkSplit, {1, 2, 0});
+    auto bkMasked = bkTransposed * gatingOutput;
+    bkMasked = transpose(bkMasked, {0, 2, 1});
+    
+    // Wv
+    auto WvReshaped = reshape(WvSplit, {dimHeads, dimModel * dimHeadSize});
+    auto WvTransposed = transpose(WvReshaped, {1, 0}); // Flip so that every column is a head vector
+    auto WvMasked = transpose(WvTransposed * gatingOutput, {0, 2, 1}); // Broadcast Wv BATCH-WISE, mask and transpose back
+    
+    auto bvTransposed = transpose(bvSplit, {1, 2, 0});
+    auto bvMasked = bvTransposed * gatingOutput;
+    bvMasked = transpose(bvMasked, {0, 2, 1});
+    
+    // STEP 6 - Slice only those heads that are in the selected union
+    //
+    // TODO Welp, needs to be implemented, because slicing doesnt take Expr and can't iterate 
+    //
+    
+
+    // STEP 7 - Reshape back into individual heads
+    
+    auto WqSelected = reshape(WqMasked, {batchSize, dimHeads, dimModel, dimHeadSize});
+    auto bqSelected = reshape(bqMasked, {batchSize, dimHeads, 1, dimHeadSize});
+
+    //LOG(info, "WqSelected.shape = {}", WqSelected->shape());
+    //LOG(info, "bqSelected.shape = {}", bqSelected->shape());
+
+    auto WkSelected = reshape(WkMasked, {batchSize, dimHeads, dimModel, dimHeadSize});
+    auto bkSelected = reshape(bkMasked, {batchSize, dimHeads, 1, dimHeadSize});
+
+    auto WvSelected = reshape(WvMasked, {batchSize, dimHeads, dimModel, dimHeadSize});
+    auto bvSelected = reshape(bvMasked, {batchSize, dimHeads, 1, dimHeadSize});
+
+
+
+    auto WqSelectedReshaped = reshape(transpose(WqSelected, {0, 2, 1, 3}), {batchSize, 1, dimModel, dimHeads * dimHeadSize});
+    //LOG(info, "WqSelectedReshaped.shape = {}", WqSelectedReshaped->shape());
+    auto bqSelectedReshaped = reshape(transpose(bqSelected, {0, 2, 1, 3}), {batchSize, 1, 1, dimHeads * dimHeadSize});
+
+    auto WkSelectedReshaped = reshape(transpose(WkSelected, {0, 2, 1, 3}), {batchSize, 1, dimModel, dimHeads * dimHeadSize});
+    auto bkSelectedReshaped = reshape(transpose(bkSelected, {0, 2, 1, 3}), {batchSize, 1, 1, dimHeads * dimHeadSize});
+
+    auto WvSelectedReshaped = reshape(transpose(WvSelected, {0, 2, 1, 3}), {batchSize, 1, dimModel, dimHeads * dimHeadSize});
+    auto bvSelectedReshaped = reshape(transpose(bvSelected, {0, 2, 1, 3}), {batchSize, 1, 1, dimHeads * dimHeadSize});
+    // STEP 8 - Calculate Q, V, K
+    //
+
+    auto inputReshape = reshape(q, {beamSize, batchSize, 1, maxLengthQuery, dimModel});
+    //LOG(info, "inputReshape.shape = {}", inputReshape->shape()); 
+
+
+    auto keysReshape = reshape(keys, {beamSize, batchSize, 1, maxLengthKeys, dimModel});
+    //LOG(info, "keysReshape.shape = {}", keysReshape->shape()); 
+
+
+    auto valuesReshape = reshape(values, {beamSize, batchSize, 1, maxLengthValues, dimModel});
+    //LOG(info, "valuesReshape.shape = {}", valuesReshape->shape()); 
+    // auto WqFiltered = index_select(WqMasked, 1, gatingIndices);
+    // //LOG(info, "WqFiltered.shape = {}", WqFiltered->shape()); 
+
+
+    // int dimSteps = q->shape()[-2];
+    // int dimBatch = q->shape()[-3];
+    // int dimBeam  = q->shape()[-4];
+
+    // int dimDepth = dimModel / dimHeads;
+
+    // auto output
+        // = reshape(input, {dimBatch * dimBeam, dimSteps, dimHeads, dimDepth});
+
+    // return transpose(output, {0, 2, 1, 3}); // [dimBatch*dimBeam, dimHeads, dimSteps, dimDepth]
+    // auto qh = affine(q, Wq, bq);
+
+    // // //LOG(info, "Wq.shape = {}", Wq->shape());
+    // // //LOG(info, "bq.shape = {}", bq->shape());
+    // //LOG(info, "Q = mm(input, Wq) + b, shape = {}", qh->shape()); 
+
+    // qh = SplitHeads(qh, dimHeads); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
+
+    // //LOG(info, "SplitHeads shape = {}", qh->shape());
+    // Expr kh;
+    // // Caching transformation of the encoder that should not be created again.
+    // // @TODO: set this automatically by memoizing encoder context and
+    // // memoization propagation (short-term)
+    // if (!cache || (cache && cache_.count(prefix + "_keys") == 0)) {
+      // auto Wk = graph_->param(prefix + "_Wk", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+      // auto bk = graph_->param(prefix + "_bk", {1,        dimHeads * dimHeadSize}, inits::zeros);
+
+      // kh = affine(keys, Wk, bk);     // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
+      // kh = SplitHeads(kh, dimHeads); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
+      // cache_[prefix + "_keys"] = kh;
+    // }
+    // else {
+      // kh = cache_[prefix + "_keys"];
+    // }
+
+    // Expr vh;
+    // if (!cache || (cache && cache_.count(prefix + "_values") == 0)) {
+      // auto Wv = graph_->param(prefix + "_Wv", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+      // auto bv = graph_->param(prefix + "_bv", {1,        dimHeads * dimHeadSize}, inits::zeros);
+
+      // vh = affine(values, Wv, bv); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
+      // vh = SplitHeads(vh, dimHeads);
+      // cache_[prefix + "_values"] = vh;
+    // } else {
+      // vh = cache_[prefix + "_values"];
+    // }
+
+
+    //TODO K AND V DON'T TAKE INPUT RESHAPE BUT KEYS AND VALUES THAT ARE PASSED INTO THE FUNCTION, FUUCK
+    // auto Q = bdot(inputReshape, WqSelected) + bqSelected;
+    auto Q = bdot(inputReshape, WqSelectedReshaped) + bqSelectedReshaped;
+    //LOG(info, "Q before split.shape = {}", Q->shape());
+
+    // auto K = bdot(keysReshape, WkSelected) + bkSelected;
+    auto K = bdot(keysReshape, WkSelectedReshaped) + bkSelectedReshaped;
+    //LOG(info, "K before split.shape = {}", K->shape());
+    
+    // auto V = bdot(valuesReshape, WvSelected) + bvSelected;
+    auto V = bdot(valuesReshape, WvSelectedReshaped) + bvSelectedReshaped;
+    //LOG(info, "V before split.shape = {}", V->shape());
+    int dimBeam = q->shape()[-4];
+    //LOG(info, "prefix = {}", prefix);
+
+
+    auto QReshape = reshape(Q, {beamSize, batchSize, maxLengthQuery, dimHeads * dimHeadSize});
+    //LOG(info, "QReshape.shape = {}", QReshape->shape());
+    auto KReshape = reshape(K, {beamSize, batchSize, maxLengthKeys, dimHeads * dimHeadSize});
+    //LOG(info, "KReshape.shape = {}", KReshape->shape());
+    auto VReshape = reshape(V, {beamSize, batchSize, maxLengthValues, dimHeads * dimHeadSize});
+    //LOG(info, "VReshape.shape = {}", VReshape->shape());
+    
+    
+    auto QSplit = reshape(QReshape, {batchSize * beamSize, maxLengthQuery, dimHeads, dimHeadSize}); 
+    QSplit = transpose(QSplit, {0, 2, 1, 3}); 
+    //LOG(info, "QSplit.shape = {}", QSplit->shape());
+    
+    
+    auto KSplit = reshape(KReshape, {batchSize * beamSize, maxLengthKeys, dimHeads, dimHeadSize}); 
+    KSplit = transpose(KSplit, {0, 2, 1, 3}); 
+    //LOG(info, "KSplit.shape = {}", KSplit->shape());
+    
+    
+    auto VSplit = reshape(VReshape, {batchSize * beamSize, maxLengthValues, dimHeads, dimHeadSize}); 
+    VSplit = transpose(VSplit, {0, 2, 1, 3}); 
+    //LOG(info, "VSplit.shape = {}", VSplit->shape());
+    
+    // apply multi-head attention to downscaled inputs
+    auto output
+        = Attention(prefix, QSplit, KSplit, VSplit, mask, saveAttentionWeights, dimBeam); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
+
+    //LOG(info, "output.shape = {}", output->shape());
+
+    // auto output
+        // = reshape(input, {dimBatch * dimBeam, dimSteps, dimHeads, dimDepth});
+
+    // return transpose(output, {0, 2, 1, 3}); // [dimBatch*dimBeam, dimHeads, dimSteps, dimDepth]
+
+    auto outputTransposed = transpose(output, {0, 2, 1, 3});
+    auto outputConcat = reshape(outputTransposed, {beamSize, batchSize, maxLengthQuery, dimHeadSize * dimHeads});
+
+
+    //LOG(info, "outputConcat.shape = {}", outputConcat->shape());
+
+    // int dimDepth = input->shape()[-1];
+    // int dimSteps = input->shape()[-2];
+    // int dimHeads = input->shape()[-3];
+    // int dimBatchBeam = input->shape()[-4];
+
+    // int dimModel = dimHeads * dimDepth;
+    // int dimBatch = dimBatchBeam / dimBeam;
+
+    // auto output = transpose(input, {0, 2, 1, 3});
+
+    // return reshape(output, {dimBeam, dimBatch, dimSteps, dimModel});
+    // output = JoinHeads(output, dimBeam); // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
+
+    int dimAtt = dimHeads * dimHeadSize;
+
+    // bool project = !opt<bool>("transformer-no-projection");
+    // if(project || dimAtt != dimOut) {
+    auto Wo
+      = graph_->param(prefix + "_Wo", {dimAtt, dimOut}, inits::glorot_uniform);
+
+
+    //LOG(info, "Wo.shape = {}", Wo->shape());
+    auto bo = graph_->param(prefix + "_bo", {1, dimOut}, inits::zeros);
+    //LOG(info, "bo.shape = {}", bo->shape());
+    auto outputFinal = affine(outputConcat, Wo, bo);
+    //LOG(info, "outputFinal.shape = {}", outputFinal->shape());
+
+    return outputFinal;
+    // return q;
   }
 
   Expr MultiHead(std::string prefix,
@@ -276,7 +630,9 @@ public:
     auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
     auto bq = graph_->param(prefix + "_bq", {       1, dimHeads * dimHeadSize}, inits::zeros);
     auto qh = affine(q, Wq, bq);
+    //LOG(info, "qh shape = {}", qh->shape());
     qh = SplitHeads(qh, dimHeads); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
+    //LOG(info, "Q shape = {}", qh->shape());
 
     Expr kh;
     // Caching transformation of the encoder that should not be created again.
@@ -311,9 +667,11 @@ public:
     // apply multi-head attention to downscaled inputs
     auto output
         = Attention(prefix, qh, kh, vh, mask, saveAttentionWeights, dimBeam); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
+    //LOG(info, "output.shape = {}", output->shape());
 
     output = JoinHeads(output, dimBeam); // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
 
+    //LOG(info, "output after join shape = {}", output->shape());
     int dimAtt = output->shape()[-1];
 
     bool project = !opt<bool>("transformer-no-projection");
@@ -324,6 +682,7 @@ public:
       output = affine(output, Wo, bo);
     }
 
+    //LOG(info, "projected output affine = {}", output->shape());
     return output;
   }
 
@@ -344,8 +703,11 @@ public:
     auto heads = opt<int>("transformer-heads");
     auto headDim = opt<int>("transformer-head-dim");
 
+
+    //LOG(info, "input just before FingerPuppet = {}", output->shape());
     // multi-head self-attention over previous input
-    output = MultiHead(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
+    // output = MultiHead(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
+    output = FingerPuppet(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
 
     auto opsPost = opt<std::string>("transformer-postprocess");
     output = postProcess(prefix + "_Wo", opsPost, output, input, dropProb);
@@ -549,6 +911,7 @@ public:
   virtual Ptr<EncoderState> build(Ptr<ExpressionGraph> graph,
                                   Ptr<data::CorpusBatch> batch) override {
     graph_ = graph;
+    //LOG(info, "batch size = {}", batch->size());
     return apply(batch);
   }
 
@@ -598,6 +961,7 @@ public:
                              layerMask);
 
       layer = LayerFFN(prefix_ + "_l" + std::to_string(i) + "_ffn", layer);
+      //LOG(info, "EncoderLayer {}", i);
     }
 
     // restore organization of batch and time steps. This is currently required
@@ -694,6 +1058,8 @@ public:
     auto embeddings  = state->getTargetEmbeddings(); // [-4: beam depth=1, -3: max length, -2: batch size, -1: vector dim]
     auto decoderMask = state->getTargetMask();       // [max length, batch size, 1]  --this is a hypothesis
 
+    //LOG(info, "decoderMask = {}", decoderMask->shape());
+
     // dropout target words
     float dropoutTrg = inference_ ? 0 : opt<float>("dropout-trg");
     if(dropoutTrg) {
@@ -726,10 +1092,13 @@ public:
     int dimTrgWords = query->shape()[-2];
     int dimBatch    = query->shape()[-3];
     auto selfMask = triangleMask(dimTrgWords);  // [ (1,) 1, max length, max length]
+    // //LOG(info, "self.mask in decoder = {}", selfMask->shape());
     if(decoderMask) {
       decoderMask = atleast_nd(decoderMask, 4);             // [ 1, max length, batch size, 1 ]
+      // //LOG(info, "decoderMask atleast_nd = {}", decoderMask->shape());
       decoderMask = reshape(transposeTimeBatch(decoderMask),// [ 1, batch size, max length, 1 ]
                             {1, dimBatch, 1, dimTrgWords}); // [ 1, batch size, 1, max length ]
+      // //LOG(info, "decoderMask reshape = {}", decoderMask->shape());
       selfMask = selfMask * decoderMask;
     }
 
@@ -769,6 +1138,7 @@ public:
 
     for(int i = 0; i < decDepth; ++i) {
       std::string layerNo = std::to_string(i + 1);
+      //LOG(info, "DecoderLayer {}", i);
       if (!tiedLayers.empty())
         layerNo = std::to_string(tiedLayers[i]);
 
@@ -793,6 +1163,8 @@ public:
       // Iterate over multiple encoders and simply stack the attention blocks
       if(encoderContexts.size() > 0) {
         for(size_t j = 0; j < encoderContexts.size(); ++j) { // multiple encoders are applied one after another
+          //LOG(info, "encoderContexts j = {}", j);
+          //LOG(info, "encoderContexts size = {}", encoderContexts.size());
           std::string prefix
             = prefix_ + "_l" + layerNo + "_context";
           if(j > 0)
@@ -814,7 +1186,12 @@ public:
 
             saveAttentionWeights = i == attLayer;
           }
-
+          
+          //LOG(info, "query shape = {}", query->shape());
+          //LOG(info, "keys shape = {}", encoderContexts[j]->shape());
+          //LOG(info, "values shape = {}", encoderContexts[j]->shape());
+          //LOG(info, "mask shape = {}", encoderMasks[j]->shape());
+          //LOG(info, "query shape = {}", query->shape());
           query = LayerAttention(prefix,
                                  query,
                                  encoderContexts[j], // keys

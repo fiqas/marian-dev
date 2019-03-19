@@ -11,7 +11,7 @@ namespace marian {
 
 namespace functional {
 
-#define CONST_SHAPE_DIMS 4
+#define CONST_SHAPE_DIMS 5
 
 /**
  * @brief Represents the size of each dimension in a tensor.
