@@ -269,6 +269,149 @@ public:
     return output;
   }
 
+  Expr TopKGatingNetwork(std::string prefix,
+                     Expr input,
+                     int dimHeads,
+                     int dimModel) {
+
+    
+    auto Wg = graph_->param(prefix + "_Wg", {dimModel, dimHeads}, inits::glorot_uniform);
+    auto Wnoise = graph_->param(prefix + "_Wnoise", {dimModel, dimHeads}, inits::glorot_uniform);
+    
+    auto WgMult = bdot(input, Wg);
+    //LOG(info, "bdot(input, Wg) = {}", WgMult->shape());
+
+
+    auto WnoiseMult = bdot(input, Wnoise);
+    //LOG(info, "bdot(input, Wnoise) = {}", WnoiseMult->shape());
+    // auto gatingAvg = mean(gatingMult, -2);
+    // //LOG(info, "avg(gatingMult) = {}", gatingAvg->shape());
+
+
+    auto softplusOut = log(1 + exp(WnoiseMult));
+    // auto gatingAvg = mean(gatingMult, -2);
+    // //LOG(info, "avg(gatingMult) = {}", gatingAvg->shape());
+
+    std::random_device rd{};
+    std::mt19937 gen{rd()};
+    // std::mt19937 gen(1811);
+    std::normal_distribution<float> d(0, 1);
+
+    // result = Wg_multi + np.random.standard_normal() * softplus_out
+
+    auto gatingResult = mean(WgMult + d(gen) * softplusOut, -2);
+    //LOG(info, "gatingResult = {}", gatingResult->shape());
+
+    //debug(gatingResult, "gatingResult");
+
+    // int K = 2; // select K heads for each sentence
+    auto gatingResultMasked = gatingResult;
+    Expr currentMax;
+    Expr mask;
+    
+    currentMax = max(gatingResultMasked, -1);
+
+    // graph_->setInference(true);
+    // for(int i = 0; i < K; i++) {
+
+      // //LOG(info, "K = {}", i);
+      // //debug(gatingResultMasked, "gatingResultMasked before");
+      // currentMax = max(gatingResultMasked, -1);
+      // //LOG(info, "currentMax = {}", currentMax->shape());
+      // //debug(currentMax, "currentMax" + std::to_string(i));
+
+
+      // mask = lt(gatingResultMasked, currentMax);
+      // //LOG(info, "maaaaask = {}", mask->shape());
+      // //debug(mask, "mask");
+      // mask = (1 - mask) * -99999999.f;
+      // //debug(mask, "mask -inf");
+
+      // gatingResultMasked = gatingResultMasked + mask;
+      // //debug(gatingResultMasked, "gatingResultMasked after");
+
+    // }
+    // graph_->setInference(false);
+
+    auto topKMask = ge(gatingResult, currentMax);
+    topKMask = (1 - topKMask) * -99999999.f;
+    //debug(topKMask, "topKMask");
+
+    auto maskedGatingOutput = gatingResult + topKMask;
+    //debug(maskedGatingOutput, "maskedGatingOutput");
+
+    auto gatingSoftmax = softmax(maskedGatingOutput);
+    //debug(gatingSoftmax, "gatingSoftmax");
+
+    return gatingSoftmax;
+  }
+  
+  Expr TopOneGatingNetwork(std::string prefix,
+                     Expr input,
+                     int dimHeads,
+                     int dimModel) {
+
+    
+    auto Wg = graph_->param(prefix + "_Wg", {dimModel, dimHeads}, inits::glorot_uniform);
+    auto Wnoise = graph_->param(prefix + "_Wnoise", {dimModel, dimHeads}, inits::glorot_uniform);
+    
+    auto WgMult = bdot(input, Wg);
+    //LOG(info, "bdot(input, Wg) = {}", WgMult->shape());
+
+    auto WnoiseMult = bdot(input, Wnoise);
+    //LOG(info, "bdot(input, Wnoise) = {}", WnoiseMult->shape());
+    // auto gatingAvg = mean(gatingMult, -2);
+    // //LOG(info, "avg(gatingMult) = {}", gatingAvg->shape());
+
+
+    auto softplusOut = log(1 + exp(WnoiseMult));
+    // auto gatingAvg = mean(gatingMult, -2);
+    // //LOG(info, "avg(gatingMult) = {}", gatingAvg->shape());
+
+    std::random_device rd{};
+    std::mt19937 gen{rd()};
+    // std::mt19937 gen(1811);
+    std::normal_distribution<float> d(0, 1);
+
+    // result = Wg_multi + np.random.standard_normal() * softplus_out
+
+    auto gatingResult = mean(WgMult + d(gen) * softplusOut, -2);
+    //LOG(info, "gatingResult = {}", gatingResult->shape());
+
+    //debug(gatingResult, "gatingResult");
+
+    Expr currentMax;
+    Expr mask;
+    
+    currentMax = max(gatingResult, -1);
+
+    auto topKMask = ge(gatingResult, currentMax);
+    topKMask = (1 - topKMask) * -99999999.f;
+    //debug(topKMask, "topKMask");
+
+    auto maskedGatingOutput = gatingResult + topKMask;
+    //debug(maskedGatingOutput, "maskedGatingOutput");
+
+    auto gatingSoftmax = softmax(maskedGatingOutput);
+    //debug(gatingSoftmax, "gatingSoftmax");
+
+    return gatingSoftmax;
+  }
+  
+  Expr SoftmaxGatingNetwork(std::string prefix,
+                     Expr input,
+                     int dimHeads,
+                     int dimModel) {
+
+    auto Wg = graph_->param(prefix + "_Wg", {dimModel, dimHeads}, inits::glorot_uniform);
+    
+    auto WgMult = bdot(input, Wg);
+    
+    auto gatingSoftmax = softmax(WgMult);
+    return gatingSoftmax;
+
+  }
+
   Expr FingerPuppet(std::string prefix,
                  int dimOut,
                  int dimHeads,
@@ -309,7 +452,7 @@ public:
     auto WqSplit = reshape(Wq, {dimHeads, dimModel, dimHeadSize});
     auto bqSplit = reshape(bq, {dimHeads, 1, dimHeadSize});
 
-    // debug(bqSplit, "bqSplit");
+    //debug(bqSplit, "bqSplit");
 
     auto WkSplit = reshape(Wk, {dimHeads, dimModel, dimHeadSize});
     auto bkSplit = reshape(bk, {dimHeads, 1, dimHeadSize});
@@ -323,70 +466,36 @@ public:
 
     // STEP 3 - Initialize gating (constant for now with random binary, seed is set so should return the same vector every time it runs)
     // std::mt19937 gen(1811);
+   
+
     
-    std::vector<float> gatingInit(dimHeads * batchSize, 1.0);
-    // std::fill_n(gatingInit.begin(), gatingInit.size() * (1 - 0.5), 1.0); //Fill half of values with 1
+    auto gatingOutput = SoftmaxGatingNetwork(prefix, q, dimHeads, dimModel);
+    // auto gatingOutput = TopOneGatingNetwork(prefix, q, dimHeads, dimModel);
+    gatingOutput = reshape(gatingOutput, {beamSize * batchSize, 1, dimHeads});
+    // std::vector<float> gatingInit (beamSize * batchSize * 1 * dimHeads, 1.0); 
+    // auto gatingOutput = graph_->constant({beamSize * batchSize, 1, dimHeads}, inits::from_vector(gatingInit));
+    auto gatingOutputMask = gt(gatingOutput, 0);
 
-    // size_t ones = std::count(gatingInit.begin(), gatingInit.end(), 1.0);
 
-    //LOG(info, "vector contains {} ones out of {}", ones, gatingInit.size());
-    //LOG(info, "vector contains {} zeroes out of {}", gatingInit.size() - ones, gatingInit.size());
+    auto gatingOutputScalars = transpose(reshape(gatingOutput, {beamSize * batchSize, 1, 1, dimHeads}), {0, 3, 1, 2});
 
-    // std::shuffle(gatingInit.begin(), gatingInit.end(), gen);
-
-    // std::stringstream ss;
-    // for(size_t i = 0; i < gatingInit.size(); ++i)
-    // {
-        // if(i != 0)
-              // ss << ",";
-          // ss << gatingInit[i];
-    // }
-    // std::string gatingString = ss.str();
-
-    //LOG(info, "gating {}", gatingString);
-    
-    auto gatingOutput = graph_->constant({batchSize, 1, dimHeads}, inits::from_vector(gatingInit));
-
-    //LOG(info, "gatingOutput shape = {}", gatingOutput->shape());
-    // debug(gatingOutput, "gatingOutput");
+    //LOG(info, "gatingOutput after reshape= {}", gatingOutput->shape());
+    //LOG(info, "gatingOutputMask = {}", gatingOutputMask->shape());
+    //LOG(info, "gatingOutputScalars = {}", gatingOutputScalars->shape());
+    //debug(gatingOutput, "gatingOutput");
 
     // auto hoho = gt(gatingOutput, 0.0);
-    // debug(hoho);
+    // //debug(hoho);
     
     // STEP 4 - Unionize the selected heads for all sentences
     
-    auto gatingSum = sum(gatingOutput, -3);
-    //LOG(info, "gatingSum.shape = {}", gatingSum->shape());
-    // debug(gatingSum);
+    // auto gatingSum = sum(gatingOutput, -3);
+    // //LOG(info, "gatingSum.shape = {}", gatingSum->shape());
+    // //debug(gatingSum);
 
-    auto gatingIndices = reshape(gt(gatingSum, 0), {1, dimHeads});
-    // debug(gatingIndices, "gatingIndices");
-    // std::vector<IndexType> ugh({0,2});
-    // auto ugh = graph_->indices(gatingIndices, 
-    // std::vector<IndexType> gatingIndicesVector;
-
-    // for (IndexType i = 0; i < dimHeads; i++) {
-      // //LOG(info, "i {}", i);
-      // auto value = slice(gatingIndices, 0, i);
-      // //LOG(info, "gatingIndices[i] {}", value);
-      // if (value != 0) {
-        // gatingIndicesVector.push_back(i);
-      // }
-    // }
-    
-    // std::stringstream ss2;
-    // for(size_t i = 0; i < gatingIndicesVector.size(); ++i)
-    // {
-        // if(i != 0)
-              // ss << ",";
-          // ss << gatingIndicesVector[i];
-    // }
-    // std::string gatingString2 = ss2.str();
-
-    // //LOG(info, "gatingIndicesVector {}", gatingString2);
-
+    // auto gatingIndices = reshape(gt(gatingSum, 0), {1, dimHeads});
+    // //debug(gatingIndices, "gatingIndices");
     // //LOG(info, "gatingIndices.shape = {}", gatingIndices->shape());
-    // // debug(gatingIndices);
 
 
     // STEP 5 - Mask heads for each sentence with the gate's output
@@ -395,22 +504,23 @@ public:
     auto WqReshaped = reshape(WqSplit, {dimHeads, dimModel * dimHeadSize});
     //LOG(info, "WqReshaped.shape = {}", WqReshaped->shape());
 
-    auto WqTransposed = transpose(WqReshaped, {1, 0}); // Flip so that every column is a head vector
+    // auto WqTransposed = transpose(WqReshaped, {1, 0}); // Flip so that every column is a head vector
     //LOG(info, "WqTransposed.shape = {}", WqTransposed->shape());
 
-    auto WqMasked = transpose(WqTransposed * gatingOutput, {0, 2, 1}); // Broadcast Wq BATCH-WISE, mask and transpose back
-    //LOG(info, "maskedMulti.shape = {}", (WqTransposed * gatingOutput)->shape());
+    // auto WqMasked = transpose(WqTransposed * gatingOutputMask, {0, 2, 1}); // Broadcast Wq BATCH-WISE, mask and transpose back
+    auto WqMasked = WqReshaped * transpose(gatingOutputMask, {0, 2, 1});
+    //LOG(info, "maskedMulti.shape = {}", (WqTransposed * gatingOutputMask)->shape());
     //LOG(info, "WqMasked.shape = {}", WqMasked->shape());
 
     auto bqTransposed = transpose(bqSplit, {1, 2, 0});
     //LOG(info, "bqTransposed.shape = {}", bqTransposed->shape());
 
-    // debug(bqTransposed, "bqTransposed");
+    //debug(bqTransposed, "bqTransposed");
 
-    auto bqMasked = bqTransposed * gatingOutput;
+    auto bqMasked = bqTransposed * gatingOutputMask;
     // auto bqMasked = transpose(bqTransposed * gatingOutput, {1, 2, 0});
     //LOG(info, "bqMasked.shape = {}", bqMasked->shape());
-    // debug(bqMasked, "bqMasked");
+    //debug(bqMasked, "bqMasked");
   
     bqMasked = transpose(bqMasked, {0, 2, 1});
     // auto bqFinal = reshape(transpose(bqMasked, {0, 2, 1}), {batchSize, dimHeads, 1, dimHeadSize});
@@ -418,19 +528,19 @@ public:
     // Wk
     auto WkReshaped = reshape(WkSplit, {dimHeads, dimModel * dimHeadSize});
     auto WkTransposed = transpose(WkReshaped, {1, 0}); // Flip so that every column is a head vector
-    auto WkMasked = transpose(WkTransposed * gatingOutput, {0, 2, 1}); // Broadcast Wk BATCH-WISE, mask and transpose back
+    auto WkMasked = transpose(WkTransposed * gatingOutputMask, {0, 2, 1}); // Broadcast Wk BATCH-WISE, mask and transpose back
     
     auto bkTransposed = transpose(bkSplit, {1, 2, 0});
-    auto bkMasked = bkTransposed * gatingOutput;
+    auto bkMasked = bkTransposed * gatingOutputMask;
     bkMasked = transpose(bkMasked, {0, 2, 1});
     
     // Wv
     auto WvReshaped = reshape(WvSplit, {dimHeads, dimModel * dimHeadSize});
     auto WvTransposed = transpose(WvReshaped, {1, 0}); // Flip so that every column is a head vector
-    auto WvMasked = transpose(WvTransposed * gatingOutput, {0, 2, 1}); // Broadcast Wv BATCH-WISE, mask and transpose back
+    auto WvMasked = transpose(WvTransposed * gatingOutputMask, {0, 2, 1}); // Broadcast Wv BATCH-WISE, mask and transpose back
     
     auto bvTransposed = transpose(bvSplit, {1, 2, 0});
-    auto bvMasked = bvTransposed * gatingOutput;
+    auto bvMasked = bvTransposed * gatingOutputMask;
     bvMasked = transpose(bvMasked, {0, 2, 1});
     
     // STEP 6 - Slice only those heads that are in the selected union
@@ -554,7 +664,7 @@ public:
     
     
     auto QSplit = reshape(QReshape, {batchSize * beamSize, maxLengthQuery, dimHeads, dimHeadSize}); 
-    QSplit = transpose(QSplit, {0, 2, 1, 3}); 
+    QSplit = transpose(QSplit, {0, 2, 1, 3});
     //LOG(info, "QSplit.shape = {}", QSplit->shape());
     
     
@@ -571,8 +681,10 @@ public:
     auto output
         = Attention(prefix, QSplit, KSplit, VSplit, mask, saveAttentionWeights, dimBeam); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
 
+
     //LOG(info, "output.shape = {}", output->shape());
 
+    output = output * gatingOutputScalars;
     // auto output
         // = reshape(input, {dimBatch * dimBeam, dimSteps, dimHeads, dimDepth});
 
@@ -1058,7 +1170,7 @@ public:
     auto embeddings  = state->getTargetEmbeddings(); // [-4: beam depth=1, -3: max length, -2: batch size, -1: vector dim]
     auto decoderMask = state->getTargetMask();       // [max length, batch size, 1]  --this is a hypothesis
 
-    //LOG(info, "decoderMask = {}", decoderMask->shape());
+    // //LOG(info, "decoderMask = {}", decoderMask->shape());
 
     // dropout target words
     float dropoutTrg = inference_ ? 0 : opt<float>("dropout-trg");

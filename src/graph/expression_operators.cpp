@@ -77,6 +77,12 @@ Expr softmax(Expr a, Expr zeroOneMask, int axis /*=-1*/) {
   return softmax(a + logMask, axis);
 }
 
+
+// Expr softplus(Expr a) {
+  // auto logMask = (1 - zeroOneMask) * -99999999.f;
+  // return softmax(a + logMask, axis);
+// }
+
 Expr logsoftmax(Expr a) {
   return Expression<LogSoftmaxNodeOp>(a);
 }

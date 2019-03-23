@@ -185,6 +185,7 @@ Expr prod(Expr a, int ax);
 Expr logsumexp(Expr a, int ax);
 
 Expr softmax(Expr x, int axis = -1);
+// Expr softplus(Expr x, int axis = -1);
 
 // @TODO: maybe get rid of this entirely to not obfuscate, what's going on inside.
 // @TODO: switch to log-masking everywhere?
