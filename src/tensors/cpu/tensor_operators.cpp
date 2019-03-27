@@ -335,6 +335,7 @@ void LogSoftmax(Tensor out, Tensor in) {
 
 // @TODO: Remove remaining underscores in CPU kernels
 void SoftmaxGrad(Tensor grad_, Tensor adj_, Tensor val_) {
+
   int rows = grad_->shape().elements() / grad_->shape()[-1];
   int cols = grad_->shape()[-1];
 

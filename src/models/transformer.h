@@ -237,23 +237,23 @@ public:
 
     // softmax over batched dot product of query and keys (applied over all
     // time steps and batch entries), also add mask for illegal connections
-    ////LOG(info, "Attention Q = {}", q->shape());
-    ////LOG(info, "Attention K = {}", k->shape());
-    ////LOG(info, "Attention V = {}", v->shape());
+    //LOG(info, "Attention Q = {}", q->shape());
+    //LOG(info, "Attention K = {}", k->shape());
+    //LOG(info, "Attention V = {}", v->shape());
 
     // multiplicative attention with flattened softmax
     float scale = 1.0f / std::sqrt((float)dk); // scaling to avoid extreme values due to matrix multiplication
     auto z = bdot(q, k, false, true, scale); // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
 
-    ////LOG(info, "Attention Q * K.T shape = {}", z->shape());
-    ////LOG(info, "Attention mask.shape = {}", mask->shape());
+    //LOG(info, "Attention Q * K.T shape = {}", z->shape());
+    //LOG(info, "Attention mask.shape = {}", mask->shape());
 
     // mask out garbage beyond end of sequences
     z = z + mask;
 
     // take softmax along src sequence axis (-1)
     auto weights = softmax(z); // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
-    ////LOG(info, "softmax(Q * K.T) shape = {}", weights->shape());
+    //LOG(info, "softmax(Q * K.T) shape = {}", weights->shape());
 
     if(saveAttentionWeights)
       collectOneHead(weights, dimBeam);
@@ -265,7 +265,7 @@ public:
 
     // apply attention weights to values
     auto output = bdot(weights, v);   // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: split vector dim]
-    ////LOG(info, "Attention output = {}", output->shape());
+    //LOG(info, "Attention output = {}", output->shape());
     return output;
   }
 
@@ -277,9 +277,9 @@ public:
     auto Wg = graph_->param(prefix + "_Wg", {dimModel, dimHeads}, inits::glorot_uniform);
   
     auto WgMult = mean(bdot(input, Wg), -2);
-    debug(input, "input");
+    // debug(input, "input");
     auto gatingSoftmax = softmax(WgMult);
-    debug(gatingSoftmax, "gatingSoftmax in SoftmaxGatingNetwork");
+    // debug(gatingSoftmax, "gatingSoftmax in SoftmaxGatingNetwork");
     return gatingSoftmax;
   
   }
@@ -292,7 +292,7 @@ public:
 
 
         
-    debug(input, "input");
+    // debug(input, "input_" + prefix);
     //LOG(info, "Entering TopKGatingNetwork");
     auto Wg = graph_->param(prefix + "_Wg", {dimModel, dimHeads}, inits::glorot_uniform);
     auto Wnoise = graph_->param(prefix + "_Wnoise", {dimModel, dimHeads}, inits::glorot_uniform);
@@ -304,7 +304,7 @@ public:
     auto WnoiseMult = bdot(input, Wnoise);
     //LOG(info, "bdot(input, Wnoise) = {}", WnoiseMult->shape());
     // auto gatingAvg = mean(gatingMult, -2);
-    // ////LOG(info, "avg(gatingMult) = {}", gatingAvg->shape());
+    // //LOG(info, "avg(gatingMult) = {}", gatingAvg->shape());
 
 
     auto softplusOut = log(1 + exp(WnoiseMult));
@@ -319,66 +319,183 @@ public:
     // result = Wg_multi + np.random.standard_normal() * softplus_out
 
     auto gatingResult = mean(WgMult + d(gen) * softplusOut, -2);
-    //LOG(info, "gatingResult = {}", gatingResult->shape());
+    // std::vector<float> haha;
 
-    debug(gatingResult, "gatingResult");
+
+    // gatingResult->val()->get(haha);
+
+    // std::stringstream ss;
+    // for(size_t i = 0; i < haha.size(); ++i)
+    // {
+        // if(i != 0)
+              // ss << ",";
+          // ss << haha[i];
+    // }
+    // std::string gatingResultString = ss.str();
+
+    //LOG(info, "gatingResult = {}", gatingResult->shape());
+    // //LOG(info, "gatingResultString = {}", gatingResultString);
+
+    // debug(gatingResult, "gatingResult_" + prefix);
 
 
     // MASKING MESSES THINGS UP
-    // int K = 3; // select K heads for each sentence
-    // auto gatingResultMasked = gatingResult;
-    // auto currentMax = max(gatingResultMasked, -1);
-    // // auto currentMax = max(gatingResult, -1);
-    // Expr mask;
+    int K = 4; // select K heads for each sentence
     
 
-    // // // graph_->setInference(true);
-    // for(int i = 0; i < K - 1; i++) {
+    // graph_->setInference(true);
+    auto gatingResultMasked = gatingResult;
+    // auto currentMax = max(gatingResultMasked, -1);
+    // graph_->setInference(true);
+    auto currentMax = max(stopGradient(gatingResult), -1);
+    // graph_->setInference(false);
+    Expr mask;
+    
 
-      // // ////LOG(info, "K = {}", i);
-      // // ////debug(gatingResultMasked, "gatingResultMasked before");
+    for(int i = 0; i < K - 1; i++) {
+
+      // // //LOG(info, "K = {}", i);
+      // // debug(gatingResultMasked, "gatingResultMasked before");
       // // currentMax = max(gatingResultMasked, -1);
-      // // //debug(currentMax, "currentMax" + std::to_string(i));
-      // //debug(currentMax, "currentmax");
+      // // debug(currentMax, "currentMax" + std::to_string(i));
+      // debug(currentMax, "currentmax");
 
       // // // if(i < K-1) {
-        // mask = lt(gatingResultMasked, currentMax);
-        // // ////LOG(info, "maaaaask = {}", mask->shape());
-        // //debug(mask, "mask");
-        // mask = (1 - mask) * -99999999.f;
-        // // ////debug(mask, "mask -inf");
+        mask = lt(stopGradient(gatingResultMasked), currentMax);
+        // // // //LOG(info, "maaaaask = {}", mask->shape());
+        // debug(mask, "mask_" + prefix);
+        auto mask2 = (1 - mask) * -99999999.f;
+        // // debug(mask, "mask -inf");
 
-        // gatingResultMasked = gatingResultMasked + mask;
-        // // ////debug(gatingResultMasked, "gatingResultMasked after");
-      // // // }
-      // // //
-      // currentMax = max(gatingResultMasked, -1);
-        // //LOG(info, "currentMax = {}", currentMax->shape());
-    // }
-    // // graph_->setInference(false);
+        gatingResultMasked = gatingResultMasked + mask2;
+        // debug(gatingResultMasked, "gatingResultMasked after " + prefix);
+      // // // // }
+      // // // //
+      currentMax = max(stopGradient(gatingResultMasked), -1);
+        //LOG(info, "currentMax = {}", currentMax->shape());
+    }
 
-    // std::vector<float> ugh({0, 1, 1, 0, 1, 0, 1, 1});
+    // std::vector<float> ugh({0, 1, 0, 1, 0, 1, 0, 1});
 
-    // auto topKMask = ge(gatingResult, currentMax);
+    auto topKMask = ge(stopGradient(gatingResult), currentMax);
+    // graph_->setInference(false);
     // auto gatingOutput = graph_->constant({beamSize * batchSize, 1, dimHeads}, inits::from_vector(gatingInit));
     // auto topKMask = graph_->constant({gatingResult->shape()[0], gatingResult->shape()[1],gatingResult->shape()[2],gatingResult->shape()[3]}, inits::from_vector(ugh));
-    // debug(topKMask, "topKMask binary");
+    // debug(topKMask, "topKMask binary" + prefix);
     // topKMask = (1 - topKMask) * -99999999.f;
     // //LOG(info, "topKMask = {}", topKMask->shape());
-    // //debug(topKMask, "topKMask");
+    // debug(topKMask, "topKMask");
 
     // auto maskedGatingOutput = gatingResult + topKMask;
-    // //debug(maskedGatingOutput, "maskedGatingOutput");
+    // debug(maskedGatingOutput, "maskedGatingOutput");
 
+    // graph_->setInference(false);
     // auto gatingSoftmax = softmax(maskedGatingOutput);
-    auto gatingSoftmax = softmax(gatingResult);
-    debug(gatingSoftmax, "gatingSoftmax");
+    auto gatingSoftmax = softmax(gatingResult, topKMask);
+    // debug(gatingSoftmax, "gatingSoftmax" + prefix);
     // gatingSoftmax = gatingSoftmax;
-    // //debug(gatingSoftmax, "gatingSoftmax after masking");
+    // debug(gatingSoftmax, "gatingSoftmax after masking");
 
     //LOG(info, "gatingSoftmax = {}", gatingSoftmax->shape());
     //LOG(info, "Exiting TopKGatingNetwork");
     return gatingSoftmax;
+  }
+
+
+  Expr Hydra(std::string prefix,
+                 int dimOut,
+                 int dimHeads,
+                 int dimHeadSize,
+                 Expr q,             // [-4: beam depth * batch size, -3: num heads, -2: max q length, -1: split vector dim]
+                 const Expr &keys,   // [-4: beam depth, -3: batch size, -2: max kv length, -1: vector dim]
+                 const Expr &values, // [-4: beam depth, -3: batch size, -2: max kv length, -1: vector dim]
+                 const Expr &mask,   // [-4: batch size, -3: num heads broadcast=1, -2: max length broadcast=1, -1: max length]
+                 bool cache = false,
+                 bool saveAttentionWeights = false) {
+
+    int dimModel = q->shape()[-1];
+    int maxLengthQuery = q->shape()[-2];
+    int maxLengthKeys = keys->shape()[-2];
+    int maxLengthValues = values->shape()[-2];
+    int batchSize = keys->shape()[-3];
+    int beamSize = q->shape()[-4];
+
+    int dimAtt = dimHeads * dimHeadSize;
+    
+    //STEP 1 - Initialize Wq, Wk, Wv so that every row is a single head
+    
+    //LOG(info, "mask.shape in FingerPuppet {}", mask->shape()); 
+    //LOG(info, "input shape = {}", q->shape());
+    //LOG(info, "dimHeads {} dimHeadSize {}", dimHeads, dimHeadSize);
+    auto Wq = graph_->param(prefix + "_Wq", {dimHeads, dimModel * dimHeadSize}, inits::glorot_uniform);
+    auto bq = graph_->param(prefix + "_bq", {dimHeads, dimHeadSize}, inits::zeros);
+   
+    auto Wk = graph_->param(prefix + "_Wk", {dimHeads, dimModel * dimHeadSize}, inits::glorot_uniform);
+    auto bk = graph_->param(prefix + "_bk", {dimHeads, dimHeadSize}, inits::zeros);
+    
+    auto Wv = graph_->param(prefix + "_Wv", {dimHeads, dimModel * dimHeadSize}, inits::glorot_uniform);
+    auto bv = graph_->param(prefix + "_bv", {dimHeads, dimHeadSize}, inits::zeros);
+
+
+    // // STEP 2 - Initialize gating (constant for now with random binary, seed is set so should return the same vector every time it runs)
+    
+    auto gatingOutput = SoftmaxGatingNetwork(prefix, q, dimHeads, dimModel);
+    // auto gatingOutput = TopKGatingNetwork(prefix, q, dimHeads, dimModel);
+    gatingOutput = reshape(gatingOutput, {beamSize * batchSize, 1, dimHeads});
+    // std::vector<float> gatingInit (beamSize * batchSize * 1 * dimHeads, 1.0); 
+    // auto gatingOutput = graph_->constant({beamSize * batchSize, 1, dimHeads}, inits::from_vector(gatingInit));
+    auto gatingOutputMask = gt(gatingOutput, 0);
+
+    auto gatingOutputScalars = transpose(reshape(gatingOutput, {beamSize * batchSize, 1, 1, dimHeads}), {0, 3, 1, 2});
+
+    //LOG(info, "gatingOutput after reshape= {}", gatingOutput->shape());
+    //LOG(info, "gatingOutputMask = {}", gatingOutputMask->shape());
+    //LOG(info, "gatingOutputScalars = {}", gatingOutputScalars->shape());
+    // debug(gatingOutput, "gatingOutput");
+
+    // auto hoho = gt(gatingOutput, 0.0);
+    // debug(hoho);
+    
+    // STEP 3 - Unionize the selected heads for all sentences
+    
+    // auto gatingSum = sum(gatingOutput, -3);
+    // //LOG(info, "gatingSum.shape = {}", gatingSum->shape());
+    // debug(gatingSum);
+
+    // auto gatingIndices = reshape(gt(gatingSum, 0), {1, dimHeads});
+    // debug(gatingIndices, "gatingIndices");
+    // //LOG(info, "gatingIndices.shape = {}", gatingIndices->shape());
+
+
+    // STEP 4 - Mask heads for each sentence with the gate's output
+    // Wq
+    auto gatingTransposed = transpose(gatingOutputMask, {0, 2, 1});
+    // debug(gatingTransposed, "gatingTransposed");
+    //LOG(info, "gatingTransposed = {}", gatingTransposed->shape());
+    auto WqMasked = Wq * gatingTransposed;
+    //LOG(info, "WqMasked.shape = {}", WqMasked->shape());
+    auto bqMasked = reshape(bq * gatingTransposed, {batchSize, dimHeads, 1, dimHeadSize});
+    //LOG(info, "bqMasked.shape = {}", bqMasked->shape());
+    // debug(WqMasked, "WqMasked_" + prefix);
+  
+
+    // Wk
+    auto WkMasked = Wk * gatingTransposed;
+    //LOG(info, "WqMasked.shape = {}", WqMasked->shape());
+    auto bkMasked = reshape(bk * gatingTransposed, {batchSize, dimHeads, 1, dimHeadSize});
+    
+    // Wv
+    auto WvMasked = Wv * gatingTransposed;
+    //LOG(info, "WqMasked.shape = {}", WqMasked->shape());
+    auto bvMasked = reshape(bv * gatingTransposed, {batchSize, dimHeads, 1, dimHeadSize});
+    
+    // STEP 5 - Slice only those heads that are in the selected union
+    //
+    // TODO Welp, needs to be implemented, because slicing doesnt take Expr and can't iterate 
+    // Change gatingOutput to vector and get indices manually???
+    
+
+    return q;
   }
 
   Expr FingerPuppet(std::string prefix,
@@ -403,9 +520,9 @@ public:
     
     //STEP 1 - Initialize Wq, Wk, Wv so that every row is a single head
     
-    ////LOG(info, "mask.shape in FingerPuppet {}", mask->shape()); 
-    ////LOG(info, "input shape = {}", q->shape());
-    ////LOG(info, "dimHeads {} dimHeadSize {}", dimHeads, dimHeadSize);
+    //LOG(info, "mask.shape in FingerPuppet {}", mask->shape()); 
+    //LOG(info, "input shape = {}", q->shape());
+    //LOG(info, "dimHeads {} dimHeadSize {}", dimHeads, dimHeadSize);
     auto Wq = graph_->param(prefix + "_Wq", {dimHeads, dimModel * dimHeadSize}, inits::glorot_uniform);
     auto bq = graph_->param(prefix + "_bq", {dimHeads, dimHeadSize}, inits::zeros);
    
@@ -416,56 +533,57 @@ public:
     auto bv = graph_->param(prefix + "_bv", {dimHeads, dimHeadSize}, inits::zeros);
 
 
+    // debug(Wq, "graph param Wq_" + prefix);
     // STEP 2 - Initialize gating (constant for now with random binary, seed is set so should return the same vector every time it runs)
     
     // auto gatingOutput = SoftmaxGatingNetwork(prefix, q, dimHeads, dimModel);
-    auto gatingOutput = TopKGatingNetwork(prefix, q, dimHeads, dimModel);
-    gatingOutput = reshape(gatingOutput, {beamSize * batchSize, 1, dimHeads});
-    // std::vector<float> gatingInit (beamSize * batchSize * 1 * dimHeads, 1.0); 
-    // auto gatingOutput = graph_->constant({beamSize * batchSize, 1, dimHeads}, inits::from_vector(gatingInit));
+    // auto gatingOutput = TopKGatingNetwork(prefix, q, dimHeads, dimModel);
+    // gatingOutput = reshape(gatingOutput, {beamSize * batchSize, 1, dimHeads});
+    std::vector<float> gatingInit (beamSize * batchSize * 1 * dimHeads, 1.0); 
+    auto gatingOutput = graph_->constant({beamSize * batchSize, 1, dimHeads}, inits::from_vector(gatingInit));
     auto gatingOutputMask = gt(gatingOutput, 0);
 
     auto gatingOutputScalars = transpose(reshape(gatingOutput, {beamSize * batchSize, 1, 1, dimHeads}), {0, 3, 1, 2});
 
-    ////LOG(info, "gatingOutput after reshape= {}", gatingOutput->shape());
-    ////LOG(info, "gatingOutputMask = {}", gatingOutputMask->shape());
-    ////LOG(info, "gatingOutputScalars = {}", gatingOutputScalars->shape());
-    ////debug(gatingOutput, "gatingOutput");
+    //LOG(info, "gatingOutput after reshape= {}", gatingOutput->shape());
+    //LOG(info, "gatingOutputMask = {}", gatingOutputMask->shape());
+    //LOG(info, "gatingOutputScalars = {}", gatingOutputScalars->shape());
+    // debug(gatingOutput, "gatingOutput" + prefix);
 
     // auto hoho = gt(gatingOutput, 0.0);
-    // ////debug(hoho);
+    // debug(hoho);
     
     // STEP 3 - Unionize the selected heads for all sentences
     
     // auto gatingSum = sum(gatingOutput, -3);
-    // ////LOG(info, "gatingSum.shape = {}", gatingSum->shape());
-    // ////debug(gatingSum);
+    // //LOG(info, "gatingSum.shape = {}", gatingSum->shape());
+    // debug(gatingSum);
 
     // auto gatingIndices = reshape(gt(gatingSum, 0), {1, dimHeads});
-    // ////debug(gatingIndices, "gatingIndices");
-    // ////LOG(info, "gatingIndices.shape = {}", gatingIndices->shape());
+    // debug(gatingIndices, "gatingIndices");
+    // //LOG(info, "gatingIndices.shape = {}", gatingIndices->shape());
 
 
     // STEP 4 - Mask heads for each sentence with the gate's output
     // Wq
     auto gatingTransposed = transpose(gatingOutputMask, {0, 2, 1});
-    ////debug(gatingTransposed, "gatingTransposed");
-    ////LOG(info, "gatingTransposed = {}", gatingTransposed->shape());
+    // debug(gatingTransposed, "gatingTransposed");
+    //LOG(info, "gatingTransposed = {}", gatingTransposed->shape());
     auto WqMasked = Wq * gatingTransposed;
-    ////LOG(info, "WqMasked.shape = {}", WqMasked->shape());
+    //LOG(info, "WqMasked.shape = {}", WqMasked->shape());
     auto bqMasked = reshape(bq * gatingTransposed, {batchSize, dimHeads, 1, dimHeadSize});
-    ////LOG(info, "bqMasked.shape = {}", bqMasked->shape());
-    ////debug(bqMasked, "bqMasked");
+    //LOG(info, "bqMasked.shape = {}", bqMasked->shape());
+    // debug(WqMasked, "WqMasked_" + prefix);
   
 
     // Wk
     auto WkMasked = Wk * gatingTransposed;
-    ////LOG(info, "WqMasked.shape = {}", WqMasked->shape());
+    //LOG(info, "WqMasked.shape = {}", WqMasked->shape());
     auto bkMasked = reshape(bk * gatingTransposed, {batchSize, dimHeads, 1, dimHeadSize});
     
     // Wv
     auto WvMasked = Wv * gatingTransposed;
-    ////LOG(info, "WqMasked.shape = {}", WqMasked->shape());
+    //LOG(info, "WqMasked.shape = {}", WqMasked->shape());
     auto bvMasked = reshape(bv * gatingTransposed, {batchSize, dimHeads, 1, dimHeadSize});
     
     // STEP 5 - Slice only those heads that are in the selected union
@@ -476,94 +594,116 @@ public:
 
     // STEP 6 - Reshape back into individual heads
     
-    auto WqSelected = reshape(WqMasked, {batchSize, dimHeads, dimModel, dimHeadSize});
-    auto bqSelected = reshape(bqMasked, {batchSize, dimHeads, 1, dimHeadSize});
+    auto WqSelected = reshape(WqMasked, {batchSize, 1, dimHeads * dimHeadSize, dimModel});
+    auto bqSelected = reshape(bqMasked, {batchSize, 1, dimHeads * dimHeadSize, 1});
+    // debug(WqSelected, "WqSelected_" + prefix);
+    // debug(bqSelected, "bqSelected_" + prefix);
 
-    ////LOG(info, "WqSelected.shape = {}", WqSelected->shape());
-    ////LOG(info, "bqSelected.shape = {}", bqSelected->shape());
+    //LOG(info, "WqSelected.shape = {}", WqSelected->shape());
+    //LOG(info, "bqSelected.shape = {}", bqSelected->shape());
 
-    auto WkSelected = reshape(WkMasked, {batchSize, dimHeads, dimModel, dimHeadSize});
-    auto bkSelected = reshape(bkMasked, {batchSize, dimHeads, 1, dimHeadSize});
+    auto WkSelected = reshape(WkMasked, {batchSize, 1, dimHeads * dimHeadSize, dimModel});
+    auto bkSelected = reshape(bkMasked, {batchSize, 1, dimHeads * dimHeadSize, 1});
 
-    auto WvSelected = reshape(WvMasked, {batchSize, dimHeads, dimModel, dimHeadSize});
-    auto bvSelected = reshape(bvMasked, {batchSize, dimHeads, 1, dimHeadSize});
+    auto WvSelected = reshape(WvMasked, {batchSize, 1, dimHeads * dimHeadSize, dimModel});
+    auto bvSelected = reshape(bvMasked, {batchSize, 1, dimHeads * dimHeadSize, 1});
+
+    // TODO: Fix?
+    //
+    
+    auto WqSelectedReshaped = transpose(WqSelected, {0, 1, 3, 2});
+    auto bqSelectedReshaped = transpose(bqSelected, {0, 1, 3, 2});
+    
+    auto WkSelectedReshaped = transpose(WkSelected, {0, 1, 3, 2});
+    auto bkSelectedReshaped = transpose(bkSelected, {0, 1, 3, 2});
+
+    auto WvSelectedReshaped = transpose(WvSelected, {0, 1, 3, 2});
+    auto bvSelectedReshaped = transpose(bvSelected, {0, 1, 3, 2});
+    // debug(WqSelectedReshaped, "WqSelectedReshaped_" + prefix);
+    // debug(bqSelectedReshaped, "bqSelectedReshaped_" + prefix);
 
 
-    auto WqSelectedReshaped = reshape(transpose(WqSelected, {0, 2, 1, 3}), {batchSize, 1, dimModel, dimHeads * dimHeadSize});
-    ////LOG(info, "WqSelectedReshaped.shape = {}", WqSelectedReshaped->shape());
-    auto bqSelectedReshaped = reshape(transpose(bqSelected, {0, 2, 1, 3}), {batchSize, 1, 1, dimHeads * dimHeadSize});
+    // TODO: I THINK IT'S MESSED UP, THERE SHOULDN'T BE TRANSPOSE EDIT: RESHAPE THEN TRANSPOSE
 
-    auto WkSelectedReshaped = reshape(transpose(WkSelected, {0, 2, 1, 3}), {batchSize, 1, dimModel, dimHeads * dimHeadSize});
-    auto bkSelectedReshaped = reshape(transpose(bkSelected, {0, 2, 1, 3}), {batchSize, 1, 1, dimHeads * dimHeadSize});
+    // auto uh = transpose(WqSelected, {0, 2, 1, 3});
+    // debug(uh, "WqSelected transposed " + prefix);
+    // auto WqSelectedReshaped = reshape(uh, {batchSize, 1, dimModel, dimHeads * dimHeadSize});
+    // //LOG(info, "WqSelectedReshaped.shape = {}", WqSelectedReshaped->shape());
+    // auto bqSelectedReshaped = reshape(transpose(bqSelected, {0, 2, 1, 3}), {batchSize, 1, 1, dimHeads * dimHeadSize});
 
-    auto WvSelectedReshaped = reshape(transpose(WvSelected, {0, 2, 1, 3}), {batchSize, 1, dimModel, dimHeads * dimHeadSize});
-    auto bvSelectedReshaped = reshape(transpose(bvSelected, {0, 2, 1, 3}), {batchSize, 1, 1, dimHeads * dimHeadSize});
-    ////debug(WqSelectedReshaped, "WqSelectedReshaped");
+    // auto WkSelectedReshaped = reshape(transpose(WkSelected, {0, 2, 1, 3}), {batchSize, 1, dimModel, dimHeads * dimHeadSize});
+    // auto bkSelectedReshaped = reshape(transpose(bkSelected, {0, 2, 1, 3}), {batchSize, 1, 1, dimHeads * dimHeadSize});
 
+    // auto WvSelectedReshaped = reshape(transpose(WvSelected, {0, 2, 1, 3}), {batchSize, 1, dimModel, dimHeads * dimHeadSize});
+    // auto bvSelectedReshaped = reshape(transpose(bvSelected, {0, 2, 1, 3}), {batchSize, 1, 1, dimHeads * dimHeadSize});
+    // debug(WqSelectedReshaped, "WqSelectedReshaped_" + prefix);
+
+    // TODO: I THINK IT'S MESSED UP, THERE SHOULDN'T BE TRANSPOSE END OF CODE BLOCK TO FIX
+    
     // STEP 8 - Calculate Q, K, V
     // Reshape input queries, keys and values to have 1 more dimension to multiply them with my Q, K, V
 
     auto inputReshape = reshape(q, {beamSize, batchSize, 1, maxLengthQuery, dimModel});
-    ////debug(inputReshape, "inputReshape");
-    ////LOG(info, "inputReshape.shape = {}", inputReshape->shape()); 
+    // debug(inputReshape, "inputReshape");
+    //LOG(info, "inputReshape.shape = {}", inputReshape->shape()); 
 
     auto keysReshape = reshape(keys, {beamSize, batchSize, 1, maxLengthKeys, dimModel});
-    ////LOG(info, "keysReshape.shape = {}", keysReshape->shape()); 
+    //LOG(info, "keysReshape.shape = {}", keysReshape->shape()); 
 
     auto valuesReshape = reshape(values, {beamSize, batchSize, 1, maxLengthValues, dimModel});
-    ////LOG(info, "valuesReshape.shape = {}", valuesReshape->shape()); 
+    //LOG(info, "valuesReshape.shape = {}", valuesReshape->shape()); 
     // auto WqFiltered = index_select(WqMasked, 1, gatingIndices);
-    // ////LOG(info, "WqFiltered.shape = {}", WqFiltered->shape()); 
+    // //LOG(info, "WqFiltered.shape = {}", WqFiltered->shape()); 
 
     
     auto Q = bdot(inputReshape, WqSelectedReshaped) + bqSelectedReshaped;
-    ////debug(Q, "Q");
-    ////LOG(info, "Q before split.shape = {}", Q->shape());
+    // debug(Q, "Q_" + prefix);
+    //LOG(info, "Q before split.shape = {}", Q->shape());
 
     auto K = bdot(keysReshape, WkSelectedReshaped) + bkSelectedReshaped;
-    ////LOG(info, "K before split.shape = {}", K->shape());
+    //LOG(info, "K before split.shape = {}", K->shape());
     
     auto V = bdot(valuesReshape, WvSelectedReshaped) + bvSelectedReshaped;
-    ////LOG(info, "V before split.shape = {}", V->shape());
-    ////LOG(info, "prefix = {}", prefix);
+    //LOG(info, "V before split.shape = {}", V->shape());
+    //LOG(info, "prefix = {}", prefix);
 
     
     //Basically do SplitHeads here
     auto QReshape = reshape(Q, {beamSize, batchSize, maxLengthQuery, dimHeads * dimHeadSize});
-    ////debug(QReshape, "QReshape");
-    ////LOG(info, "QReshape.shape = {}", QReshape->shape());
+    // debug(QReshape, "QReshape_" + prefix);
+    //LOG(info, "QReshape.shape = {}", QReshape->shape());
     auto KReshape = reshape(K, {beamSize, batchSize, maxLengthKeys, dimHeads * dimHeadSize});
-    ////LOG(info, "KReshape.shape = {}", KReshape->shape());
+    //LOG(info, "KReshape.shape = {}", KReshape->shape());
     auto VReshape = reshape(V, {beamSize, batchSize, maxLengthValues, dimHeads * dimHeadSize});
-    ////LOG(info, "VReshape.shape = {}", VReshape->shape());
+    //LOG(info, "VReshape.shape = {}", VReshape->shape());
     
     
     auto QSplit = reshape(QReshape, {batchSize * beamSize, maxLengthQuery, dimHeads, dimHeadSize}); 
-    ////debug(QSplit, "QSplit");
+    // debug(QSplit, "QSplit");
     QSplit = transpose(QSplit, {0, 2, 1, 3});
-    ////LOG(info, "QSplit.shape = {}", QSplit->shape());
+    //LOG(info, "QSplit.shape = {}", QSplit->shape());
     
     auto KSplit = reshape(KReshape, {batchSize * beamSize, maxLengthKeys, dimHeads, dimHeadSize}); 
     KSplit = transpose(KSplit, {0, 2, 1, 3}); 
-    ////LOG(info, "KSplit.shape = {}", KSplit->shape());
+    //LOG(info, "KSplit.shape = {}", KSplit->shape());
     
     auto VSplit = reshape(VReshape, {batchSize * beamSize, maxLengthValues, dimHeads, dimHeadSize}); 
     VSplit = transpose(VSplit, {0, 2, 1, 3}); 
-    ////LOG(info, "VSplit.shape = {}", VSplit->shape());
+    //LOG(info, "VSplit.shape = {}", VSplit->shape());
    
 
     // apply multi-head attention to downscaled inputs
     auto output
         = Attention(prefix, QSplit, KSplit, VSplit, mask, saveAttentionWeights, beamSize); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
-    ////debug(output, "Attention output");
-    ////LOG(info, "output.shape = {}", output->shape());
+    // debug(output, "Attention output_" + prefix);
+    //LOG(info, "output.shape = {}", output->shape());
     output = output * gatingOutputScalars;
-    ////debug(output, "output * gatingOutputScalars");
+    // debug(output, "output * gatingOutputScalars_" + prefix);
 
     // Basically JoinHeads here
     auto outputTransposed = transpose(output, {0, 2, 1, 3});
     auto outputConcat = reshape(outputTransposed, {beamSize, batchSize, maxLengthQuery, dimHeadSize * dimHeads});
-    ////LOG(info, "outputConcat.shape = {}", outputConcat->shape());
+    //LOG(info, "outputConcat.shape = {}", outputConcat->shape());
 
 
     // bool project = !opt<bool>("transformer-no-projection");
@@ -571,12 +711,13 @@ public:
     auto Wo
       = graph_->param(prefix + "_Wo", {dimAtt, dimOut}, inits::glorot_uniform);
 
-    ////LOG(info, "Wo.shape = {}", Wo->shape());
+    //LOG(info, "Wo.shape = {}", Wo->shape());
     auto bo = graph_->param(prefix + "_bo", {1, dimOut}, inits::zeros);
-    ////LOG(info, "bo.shape = {}", bo->shape());
+    //LOG(info, "bo.shape = {}", bo->shape());
     auto outputFinal = affine(outputConcat, Wo, bo);
-    ////LOG(info, "outputFinal.shape = {}", outputFinal->shape());
+    //LOG(info, "outputFinal.shape = {}", outputFinal->shape());
 
+    // debug(outputFinal, "outputFinal_" + prefix);
     return outputFinal;
     // return q;
   }
@@ -596,9 +737,9 @@ public:
     auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
     auto bq = graph_->param(prefix + "_bq", {       1, dimHeads * dimHeadSize}, inits::zeros);
     auto qh = affine(q, Wq, bq);
-    ////LOG(info, "qh shape = {}", qh->shape());
+    //LOG(info, "qh shape = {}", qh->shape());
     qh = SplitHeads(qh, dimHeads); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
-    ////LOG(info, "Q shape = {}", qh->shape());
+    //LOG(info, "Q shape = {}", qh->shape());
 
     Expr kh;
     // Caching transformation of the encoder that should not be created again.
@@ -633,11 +774,11 @@ public:
     // apply multi-head attention to downscaled inputs
     auto output
         = Attention(prefix, qh, kh, vh, mask, saveAttentionWeights, dimBeam); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
-    ////LOG(info, "output.shape = {}", output->shape());
+    //LOG(info, "output.shape = {}", output->shape());
 
     output = JoinHeads(output, dimBeam); // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
 
-    ////LOG(info, "output after join shape = {}", output->shape());
+    //LOG(info, "output after join shape = {}", output->shape());
     int dimAtt = output->shape()[-1];
 
     bool project = !opt<bool>("transformer-no-projection");
@@ -648,7 +789,7 @@ public:
       output = affine(output, Wo, bo);
     }
 
-    ////LOG(info, "projected output affine = {}", output->shape());
+    //LOG(info, "projected output affine = {}", output->shape());
     return output;
   }
 
@@ -670,7 +811,7 @@ public:
     auto headDim = opt<int>("transformer-head-dim");
 
 
-    ////LOG(info, "input just before FingerPuppet = {}", output->shape());
+    //LOG(info, "input just before FingerPuppet = {}", output->shape());
     // multi-head self-attention over previous input
     // output = MultiHead(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
     output = FingerPuppet(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
@@ -877,7 +1018,7 @@ public:
   virtual Ptr<EncoderState> build(Ptr<ExpressionGraph> graph,
                                   Ptr<data::CorpusBatch> batch) override {
     graph_ = graph;
-    ////LOG(info, "batch size = {}", batch->size());
+    //LOG(info, "batch size = {}", batch->size());
     return apply(batch);
   }
 
@@ -927,7 +1068,7 @@ public:
                              layerMask);
 
       layer = LayerFFN(prefix_ + "_l" + std::to_string(i) + "_ffn", layer);
-      ////LOG(info, "EncoderLayer {}", i);
+      //LOG(info, "EncoderLayer {}", i);
     }
 
     // restore organization of batch and time steps. This is currently required
@@ -1024,7 +1165,7 @@ public:
     auto embeddings  = state->getTargetEmbeddings(); // [-4: beam depth=1, -3: max length, -2: batch size, -1: vector dim]
     auto decoderMask = state->getTargetMask();       // [max length, batch size, 1]  --this is a hypothesis
 
-    // ////LOG(info, "decoderMask = {}", decoderMask->shape());
+    // //LOG(info, "decoderMask = {}", decoderMask->shape());
 
     // dropout target words
     float dropoutTrg = inference_ ? 0 : opt<float>("dropout-trg");
@@ -1058,13 +1199,13 @@ public:
     int dimTrgWords = query->shape()[-2];
     int dimBatch    = query->shape()[-3];
     auto selfMask = triangleMask(dimTrgWords);  // [ (1,) 1, max length, max length]
-    // ////LOG(info, "self.mask in decoder = {}", selfMask->shape());
+    // //LOG(info, "self.mask in decoder = {}", selfMask->shape());
     if(decoderMask) {
       decoderMask = atleast_nd(decoderMask, 4);             // [ 1, max length, batch size, 1 ]
-      // ////LOG(info, "decoderMask atleast_nd = {}", decoderMask->shape());
+      // //LOG(info, "decoderMask atleast_nd = {}", decoderMask->shape());
       decoderMask = reshape(transposeTimeBatch(decoderMask),// [ 1, batch size, max length, 1 ]
                             {1, dimBatch, 1, dimTrgWords}); // [ 1, batch size, 1, max length ]
-      // ////LOG(info, "decoderMask reshape = {}", decoderMask->shape());
+      // //LOG(info, "decoderMask reshape = {}", decoderMask->shape());
       selfMask = selfMask * decoderMask;
     }
 
@@ -1104,7 +1245,7 @@ public:
 
     for(int i = 0; i < decDepth; ++i) {
       std::string layerNo = std::to_string(i + 1);
-      ////LOG(info, "DecoderLayer {}", i);
+      //LOG(info, "DecoderLayer {}", i);
       if (!tiedLayers.empty())
         layerNo = std::to_string(tiedLayers[i]);
 
@@ -1129,8 +1270,8 @@ public:
       // Iterate over multiple encoders and simply stack the attention blocks
       if(encoderContexts.size() > 0) {
         for(size_t j = 0; j < encoderContexts.size(); ++j) { // multiple encoders are applied one after another
-          ////LOG(info, "encoderContexts j = {}", j);
-          ////LOG(info, "encoderContexts size = {}", encoderContexts.size());
+          //LOG(info, "encoderContexts j = {}", j);
+          //LOG(info, "encoderContexts size = {}", encoderContexts.size());
           std::string prefix
             = prefix_ + "_l" + layerNo + "_context";
           if(j > 0)
@@ -1153,11 +1294,11 @@ public:
             saveAttentionWeights = i == attLayer;
           }
           
-          ////LOG(info, "query shape = {}", query->shape());
-          ////LOG(info, "keys shape = {}", encoderContexts[j]->shape());
-          ////LOG(info, "values shape = {}", encoderContexts[j]->shape());
-          ////LOG(info, "mask shape = {}", encoderMasks[j]->shape());
-          ////LOG(info, "query shape = {}", query->shape());
+          //LOG(info, "query shape = {}", query->shape());
+          //LOG(info, "keys shape = {}", encoderContexts[j]->shape());
+          //LOG(info, "values shape = {}", encoderContexts[j]->shape());
+          //LOG(info, "mask shape = {}", encoderMasks[j]->shape());
+          //LOG(info, "query shape = {}", query->shape());
           query = LayerAttention(prefix,
                                  query,
                                  encoderContexts[j], // keys
