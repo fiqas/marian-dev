@@ -166,9 +166,15 @@ void ConfigParser::addOptionsModel(cli::CLIWrapper& cli) {
       "Tie all embedding layers and output layer");
 
   // Transformer options
+  cli.add<std::string>("--transformer-attention",
+      "Type of Transformer attention: base, finger-puppet, hydra",
+      "base");
   cli.add<int>("--transformer-heads",
       "Number of heads in multi-head attention (transformer)",
       8);
+  cli.add<int>("--transformer-select-heads",
+      "Number of heads to be SELECTED in multi-head attention (transformer)",
+      4);
   cli.add<int>("--transformer-head-dim",
       "Dimension of each head in multi-head attention (transformer)",
       64);

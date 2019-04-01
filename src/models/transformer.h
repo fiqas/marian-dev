@@ -237,23 +237,25 @@ public:
 
     // softmax over batched dot product of query and keys (applied over all
     // time steps and batch entries), also add mask for illegal connections
-    //LOG(info, "Attention Q = {}", q->shape());
-    //LOG(info, "Attention K = {}", k->shape());
-    //LOG(info, "Attention V = {}", v->shape());
+    //HYDRA LOG(info, "Attention Q = {}", q->shape());
+    //HYDRA LOG(info, "Attention K = {}", k->shape());
+    //HYDRA LOG(info, "Attention V = {}", v->shape());
 
     // multiplicative attention with flattened softmax
     float scale = 1.0f / std::sqrt((float)dk); // scaling to avoid extreme values due to matrix multiplication
     auto z = bdot(q, k, false, true, scale); // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
+    //HYDRA debug(z, "bdot(Q,K)");
 
-    //LOG(info, "Attention Q * K.T shape = {}", z->shape());
-    //LOG(info, "Attention mask.shape = {}", mask->shape());
+    //HYDRA LOG(info, "Attention Q * K.T shape = {}", z->shape());
+    //HYDRA LOG(info, "Attention mask.shape = {}", mask->shape());
 
     // mask out garbage beyond end of sequences
     z = z + mask;
 
     // take softmax along src sequence axis (-1)
     auto weights = softmax(z); // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
-    //LOG(info, "softmax(Q * K.T) shape = {}", weights->shape());
+    //HYDRA debug(weights, "softmax(bdot(Q,K))");
+    //HYDRA LOG(info, "softmax(Q * K.T) shape = {}", weights->shape());
 
     if(saveAttentionWeights)
       collectOneHead(weights, dimBeam);
@@ -265,7 +267,8 @@ public:
 
     // apply attention weights to values
     auto output = bdot(weights, v);   // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: split vector dim]
-    //LOG(info, "Attention output = {}", output->shape());
+    //HYDRA debug(output, "bdot(softmax,K)");
+    //HYDRA LOG(info, "Attention output = {}", output->shape());
     return output;
   }
 
@@ -277,9 +280,9 @@ public:
     auto Wg = graph_->param(prefix + "_Wg", {dimModel, dimHeads}, inits::glorot_uniform);
   
     auto WgMult = mean(bdot(input, Wg), -2);
-    // debug(input, "input");
+    // //HYDRA debug(input, "input");
     auto gatingSoftmax = softmax(WgMult);
-    // debug(gatingSoftmax, "gatingSoftmax in SoftmaxGatingNetwork");
+    // //HYDRA debug(gatingSoftmax, "gatingSoftmax in SoftmaxGatingNetwork");
     return gatingSoftmax;
   
   }
@@ -288,28 +291,32 @@ public:
   Expr TopKGatingNetwork(std::string prefix,
                      Expr input,
                      int dimHeads,
+                     int K,
                      int dimModel) {
 
 
         
-    // debug(input, "input_" + prefix);
-    //LOG(info, "Entering TopKGatingNetwork");
+    // //HYDRA debug(input, "input_" + prefix);
+    ////HYDRA LOG(info, "Entering TopKGatingNetwork");
     auto Wg = graph_->param(prefix + "_Wg", {dimModel, dimHeads}, inits::glorot_uniform);
-    auto Wnoise = graph_->param(prefix + "_Wnoise", {dimModel, dimHeads}, inits::glorot_uniform);
+    auto bg = graph_->param(prefix + "_bg", {1, dimHeads}, inits::zeros);
     
-    auto WgMult = bdot(input, Wg);
-    //LOG(info, "bdot(input, Wg) = {}", WgMult->shape());
+    auto Wnoise = graph_->param(prefix + "_Wnoise", {dimModel, dimHeads}, inits::glorot_uniform);
+    auto bnoise = graph_->param(prefix + "_bnoise", {1, dimHeads}, inits::zeros);
+    
+    auto WgMult = bdot(input, Wg) + bg;
+    ////HYDRA LOG(info, "bdot(input, Wg) = {}", WgMult->shape());
 
 
-    auto WnoiseMult = bdot(input, Wnoise);
-    //LOG(info, "bdot(input, Wnoise) = {}", WnoiseMult->shape());
+    auto WnoiseMult = bdot(input, Wnoise) + bnoise;
+    ////HYDRA LOG(info, "bdot(input, Wnoise) = {}", WnoiseMult->shape());
     // auto gatingAvg = mean(gatingMult, -2);
-    // //LOG(info, "avg(gatingMult) = {}", gatingAvg->shape());
+    // ////HYDRA LOG(info, "avg(gatingMult) = {}", gatingAvg->shape());
 
 
     auto softplusOut = log(1 + exp(WnoiseMult));
     // auto gatingAvg = mean(gatingMult, -2);
-    // //LOG(info, "avg(gatingMult) = {}", gatingAvg->shape());
+    // ////HYDRA LOG(info, "avg(gatingMult) = {}", gatingAvg->shape());
 
     std::random_device rd{};
     std::mt19937 gen{rd()};
@@ -333,14 +340,14 @@ public:
     // }
     // std::string gatingResultString = ss.str();
 
-    //LOG(info, "gatingResult = {}", gatingResult->shape());
-    // //LOG(info, "gatingResultString = {}", gatingResultString);
+    ////HYDRA LOG(info, "gatingResult = {}", gatingResult->shape());
+    // ////HYDRA LOG(info, "gatingResultString = {}", gatingResultString);
 
-    // debug(gatingResult, "gatingResult_" + prefix);
+    // //HYDRA debug(gatingResult, "gatingResult_" + prefix);
 
 
     // MASKING MESSES THINGS UP
-    int K = 4; // select K heads for each sentence
+    // int K = 2; // select K heads for each sentence
     
 
     // graph_->setInference(true);
@@ -354,25 +361,25 @@ public:
 
     for(int i = 0; i < K - 1; i++) {
 
-      // // //LOG(info, "K = {}", i);
-      // // debug(gatingResultMasked, "gatingResultMasked before");
+      // // ////HYDRA LOG(info, "K = {}", i);
+      // // //HYDRA debug(gatingResultMasked, "gatingResultMasked before");
       // // currentMax = max(gatingResultMasked, -1);
-      // // debug(currentMax, "currentMax" + std::to_string(i));
-      // debug(currentMax, "currentmax");
+      // // //HYDRA debug(currentMax, "currentMax" + std::to_string(i));
+      // //HYDRA debug(currentMax, "currentmax");
 
       // // // if(i < K-1) {
         mask = lt(stopGradient(gatingResultMasked), currentMax);
-        // // // //LOG(info, "maaaaask = {}", mask->shape());
-        // debug(mask, "mask_" + prefix);
+        // // // ////HYDRA LOG(info, "maaaaask = {}", mask->shape());
+        // //HYDRA debug(mask, "mask_" + prefix);
         auto mask2 = (1 - mask) * -99999999.f;
-        // // debug(mask, "mask -inf");
+        // // //HYDRA debug(mask, "mask -inf");
 
         gatingResultMasked = gatingResultMasked + mask2;
-        // debug(gatingResultMasked, "gatingResultMasked after " + prefix);
+        // //HYDRA debug(gatingResultMasked, "gatingResultMasked after " + prefix);
       // // // // }
       // // // //
       currentMax = max(stopGradient(gatingResultMasked), -1);
-        //LOG(info, "currentMax = {}", currentMax->shape());
+        ////HYDRA LOG(info, "currentMax = {}", currentMax->shape());
     }
 
     // std::vector<float> ugh({0, 1, 0, 1, 0, 1, 0, 1});
@@ -381,23 +388,23 @@ public:
     // graph_->setInference(false);
     // auto gatingOutput = graph_->constant({beamSize * batchSize, 1, dimHeads}, inits::from_vector(gatingInit));
     // auto topKMask = graph_->constant({gatingResult->shape()[0], gatingResult->shape()[1],gatingResult->shape()[2],gatingResult->shape()[3]}, inits::from_vector(ugh));
-    // debug(topKMask, "topKMask binary" + prefix);
+    // //HYDRA debug(topKMask, "topKMask binary" + prefix);
     // topKMask = (1 - topKMask) * -99999999.f;
-    // //LOG(info, "topKMask = {}", topKMask->shape());
-    // debug(topKMask, "topKMask");
+    // ////HYDRA LOG(info, "topKMask = {}", topKMask->shape());
+    //HYDRA debug(topKMask, "topKMask");
 
     // auto maskedGatingOutput = gatingResult + topKMask;
-    // debug(maskedGatingOutput, "maskedGatingOutput");
+    // //HYDRA debug(maskedGatingOutput, "maskedGatingOutput");
 
     // graph_->setInference(false);
     // auto gatingSoftmax = softmax(maskedGatingOutput);
     auto gatingSoftmax = softmax(gatingResult, topKMask);
-    // debug(gatingSoftmax, "gatingSoftmax" + prefix);
+    //HYDRA debug(gatingSoftmax, "gatingSoftmax" + prefix);
     // gatingSoftmax = gatingSoftmax;
-    // debug(gatingSoftmax, "gatingSoftmax after masking");
+    // //HYDRA debug(gatingSoftmax, "gatingSoftmax after masking");
 
-    //LOG(info, "gatingSoftmax = {}", gatingSoftmax->shape());
-    //LOG(info, "Exiting TopKGatingNetwork");
+    ////HYDRA LOG(info, "gatingSoftmax = {}", gatingSoftmax->shape());
+    // //HYDRA LOG(info, "Exiting TopKGatingNetwork");
     return gatingSoftmax;
   }
 
@@ -405,6 +412,7 @@ public:
   Expr Hydra(std::string prefix,
                  int dimOut,
                  int dimHeads,
+                 int dimK,
                  int dimHeadSize,
                  Expr q,             // [-4: beam depth * batch size, -3: num heads, -2: max q length, -1: split vector dim]
                  const Expr &keys,   // [-4: beam depth, -3: batch size, -2: max kv length, -1: vector dim]
@@ -424,9 +432,9 @@ public:
     
     //STEP 1 - Initialize Wq, Wk, Wv so that every row is a single head
     
-    //LOG(info, "mask.shape in FingerPuppet {}", mask->shape()); 
-    //LOG(info, "input shape = {}", q->shape());
-    //LOG(info, "dimHeads {} dimHeadSize {}", dimHeads, dimHeadSize);
+    //HYDRA LOG(info, "mask.shape in FingerPuppet {}", mask->shape()); 
+    //HYDRA LOG(info, "input shape = {}", q->shape());
+    //HYDRA LOG(info, "dimHeads {} dimHeadSize {}", dimHeads, dimHeadSize);
     auto Wq = graph_->param(prefix + "_Wq", {dimHeads, dimModel * dimHeadSize}, inits::glorot_uniform);
     auto bq = graph_->param(prefix + "_bq", {dimHeads, dimHeadSize}, inits::zeros);
    
@@ -437,56 +445,59 @@ public:
     auto bv = graph_->param(prefix + "_bv", {dimHeads, dimHeadSize}, inits::zeros);
 
 
-    // // STEP 2 - Initialize gating (constant for now with random binary, seed is set so should return the same vector every time it runs)
+    //HYDRA debug(Wq, "graph param Wq_" + prefix);
+
+    // STEP 2 - Initialize gating (constant for now with random binary, seed is set so should return the same vector every time it runs)
     
-    auto gatingOutput = SoftmaxGatingNetwork(prefix, q, dimHeads, dimModel);
-    // auto gatingOutput = TopKGatingNetwork(prefix, q, dimHeads, dimModel);
-    gatingOutput = reshape(gatingOutput, {beamSize * batchSize, 1, dimHeads});
-    // std::vector<float> gatingInit (beamSize * batchSize * 1 * dimHeads, 1.0); 
-    // auto gatingOutput = graph_->constant({beamSize * batchSize, 1, dimHeads}, inits::from_vector(gatingInit));
+    // auto gatingOutput = SoftmaxGatingNetwork(prefix, q, dimHeads, dimModel);
+    // auto gatingOutput = TopKGatingNetwork(prefix, q, dimHeads, dimK, dimModel);
+    //HYDRA LOG(info, "gatingOutput before reshape= {}", gatingOutput->shape());
+    // gatingOutput = reshape(gatingOutput, {beamSize, batchSize, 1, dimHeads});
+    // //HYDRA LOG(info, "gatingOutput after reshape= {}", gatingOutput->shape());
+    std::vector<float> gatingInit (beamSize * batchSize * 1 * dimHeads, 1.0); 
+    auto gatingOutput = graph_->constant({beamSize, batchSize, 1, dimHeads}, inits::from_vector(gatingInit));
     auto gatingOutputMask = gt(gatingOutput, 0);
 
-    auto gatingOutputScalars = transpose(reshape(gatingOutput, {beamSize * batchSize, 1, 1, dimHeads}), {0, 3, 1, 2});
+    auto gatingOutputScalars = transpose(reshape(gatingOutput, {beamSize, batchSize, 1, 1, dimHeads}), {0, 1, 4, 2, 3});
 
-    //LOG(info, "gatingOutput after reshape= {}", gatingOutput->shape());
-    //LOG(info, "gatingOutputMask = {}", gatingOutputMask->shape());
-    //LOG(info, "gatingOutputScalars = {}", gatingOutputScalars->shape());
-    // debug(gatingOutput, "gatingOutput");
+    //HYDRA LOG(info, "gatingOutput after reshape= {}", gatingOutput->shape());
+    //HYDRA LOG(info, "gatingOutputMask = {}", gatingOutputMask->shape());
+    //HYDRA LOG(info, "gatingOutputScalars = {}", gatingOutputScalars->shape());
+    //HYDRA debug(gatingOutput, "gatingOutput" + prefix);
+    //HYDRA debug(gatingOutputScalars, "gatingOutputScalars" + prefix);
 
     // auto hoho = gt(gatingOutput, 0.0);
-    // debug(hoho);
+    // //HYDRA debug(hoho);
     
     // STEP 3 - Unionize the selected heads for all sentences
     
     // auto gatingSum = sum(gatingOutput, -3);
-    // //LOG(info, "gatingSum.shape = {}", gatingSum->shape());
-    // debug(gatingSum);
+    // ////HYDRA LOG(info, "gatingSum.shape = {}", gatingSum->shape());
+    // //HYDRA debug(gatingSum);
 
     // auto gatingIndices = reshape(gt(gatingSum, 0), {1, dimHeads});
-    // debug(gatingIndices, "gatingIndices");
-    // //LOG(info, "gatingIndices.shape = {}", gatingIndices->shape());
+    // //HYDRA debug(gatingIndices, "gatingIndices");
+    // ////HYDRA LOG(info, "gatingIndices.shape = {}", gatingIndices->shape());
 
 
     // STEP 4 - Mask heads for each sentence with the gate's output
     // Wq
-    auto gatingTransposed = transpose(gatingOutputMask, {0, 2, 1});
-    // debug(gatingTransposed, "gatingTransposed");
-    //LOG(info, "gatingTransposed = {}", gatingTransposed->shape());
+    auto gatingTransposed = transpose(gatingOutputMask, {0, 1, 3, 2});
+    //HYDRA debug(gatingTransposed, "gatingTransposed");
+    //HYDRA LOG(info, "gatingTransposed = {}", gatingTransposed->shape());
     auto WqMasked = Wq * gatingTransposed;
-    //LOG(info, "WqMasked.shape = {}", WqMasked->shape());
+    //HYDRA LOG(info, "WqMasked.shape = {}", WqMasked->shape());
     auto bqMasked = reshape(bq * gatingTransposed, {batchSize, dimHeads, 1, dimHeadSize});
-    //LOG(info, "bqMasked.shape = {}", bqMasked->shape());
-    // debug(WqMasked, "WqMasked_" + prefix);
+    //HYDRA LOG(info, "bqMasked.shape = {}", bqMasked->shape());
+    //HYDRA debug(WqMasked, "WqMasked_" + prefix);
   
 
     // Wk
     auto WkMasked = Wk * gatingTransposed;
-    //LOG(info, "WqMasked.shape = {}", WqMasked->shape());
     auto bkMasked = reshape(bk * gatingTransposed, {batchSize, dimHeads, 1, dimHeadSize});
     
     // Wv
     auto WvMasked = Wv * gatingTransposed;
-    //LOG(info, "WqMasked.shape = {}", WqMasked->shape());
     auto bvMasked = reshape(bv * gatingTransposed, {batchSize, dimHeads, 1, dimHeadSize});
     
     // STEP 5 - Slice only those heads that are in the selected union
@@ -495,7 +506,122 @@ public:
     // Change gatingOutput to vector and get indices manually???
     
 
-    return q;
+    // STEP 6 - Reshape back into individual heads
+    
+    auto WqSelected = reshape(WqMasked, {batchSize, 1, dimHeads * dimHeadSize, dimModel});
+    auto bqSelected = reshape(bqMasked, {batchSize, 1, dimHeads * dimHeadSize, 1});
+    //HYDRA debug(WqSelected, "WqSelected_" + prefix);
+    //HYDRA debug(bqSelected, "bqSelected_" + prefix);
+
+    //HYDRA LOG(info, "WqSelected.shape = {}", WqSelected->shape());
+    //HYDRA LOG(info, "bqSelected.shape = {}", bqSelected->shape());
+
+    auto WkSelected = reshape(WkMasked, {batchSize, 1, dimHeads * dimHeadSize, dimModel});
+    auto bkSelected = reshape(bkMasked, {batchSize, 1, dimHeads * dimHeadSize, 1});
+
+    auto WvSelected = reshape(WvMasked, {batchSize, 1, dimHeads * dimHeadSize, dimModel});
+    auto bvSelected = reshape(bvMasked, {batchSize, 1, dimHeads * dimHeadSize, 1});
+
+    // TODO: Fix?
+    //
+    
+    auto WqSelectedReshaped = transpose(WqSelected, {0, 1, 3, 2});
+    auto bqSelectedReshaped = transpose(bqSelected, {0, 1, 3, 2});
+    
+    auto WkSelectedReshaped = transpose(WkSelected, {0, 1, 3, 2});
+    auto bkSelectedReshaped = transpose(bkSelected, {0, 1, 3, 2});
+
+    auto WvSelectedReshaped = transpose(WvSelected, {0, 1, 3, 2});
+    auto bvSelectedReshaped = transpose(bvSelected, {0, 1, 3, 2});
+    //HYDRA LOG(info, "WqTransposed.shape = {}", WqSelectedReshaped->shape());
+    //HYDRA LOG(info, "bqTransposed.shape = {}", bqSelectedReshaped->shape());
+    //HYDRA debug(WqSelectedReshaped, "WqSelectedReshaped_" + prefix);
+    //HYDRA debug(bqSelectedReshaped, "bqSelectedReshaped_" + prefix);
+    
+    // STEP 8 - Calculate Q, K, V
+    // Reshape input queries, keys and values to have 1 more dimension to multiply them with my Q, K, V
+
+    auto inputReshape = reshape(q, {beamSize, batchSize, 1, maxLengthQuery, dimModel});
+    //HYDRA debug(inputReshape, "inputReshape");
+    //HYDRA LOG(info, "inputReshape.shape = {}", inputReshape->shape()); 
+
+    auto keysReshape = reshape(keys, {beamSize, batchSize, 1, maxLengthKeys, dimModel});
+    //HYDRA debug(keysReshape, "keysReshape_" + prefix);
+    //HYDRA LOG(info, "keysReshape.shape = {}", keysReshape->shape()); 
+
+    auto valuesReshape = reshape(values, {beamSize, batchSize, 1, maxLengthValues, dimModel});
+    //HYDRA debug(valuesReshape, "valuesReshape_" + prefix);
+    //HYDRA LOG(info, "valuesReshape.shape = {}", valuesReshape->shape()); 
+    // auto WqFiltered = index_select(WqMasked, 1, gatingIndices);
+    // ////HYDRA LOG(info, "WqFiltered.shape = {}", WqFiltered->shape()); 
+
+    
+    auto Q = bdot(inputReshape, WqSelectedReshaped) + bqSelectedReshaped;
+    //HYDRA debug(Q, "Q_" + prefix);
+    //HYDRA LOG(info, "Q before split.shape = {}", Q->shape());
+
+    auto K = bdot(keysReshape, WkSelectedReshaped) + bkSelectedReshaped;
+    //HYDRA debug(K, "K_" + prefix);
+    //HYDRA LOG(info, "K before split.shape = {}", K->shape());
+    
+    auto V = bdot(valuesReshape, WvSelectedReshaped) + bvSelectedReshaped;
+    //HYDRA debug(V, "V_" + prefix);
+    //HYDRA LOG(info, "V before split.shape = {}", V->shape());
+    //HYDRA LOG(info, "prefix = {}", prefix);
+    
+    // UNROLL BEAM
+    auto QReshape = reshape(Q, {beamSize * batchSize, 1, maxLengthQuery, dimHeads * dimHeadSize});
+    //HYDRA debug(QReshape, "QReshape_" + prefix);
+    ////HYDRA LOG(info, "QReshape.shape = {}", QReshape->shape());
+    auto KReshape = reshape(K, {beamSize * batchSize, 1, maxLengthKeys, dimHeads * dimHeadSize});
+    //HYDRA debug(KReshape, "KReshape_" + prefix);
+    ////HYDRA LOG(info, "KReshape.shape = {}", KReshape->shape());
+    auto VReshape = reshape(V, {beamSize * batchSize, 1,  maxLengthValues, dimHeads * dimHeadSize});
+    //HYDRA debug(VReshape, "VReshape_" + prefix);
+
+    // apply multi-head attention to downscaled inputs
+    auto output
+        = Attention(prefix, QReshape, KReshape, VReshape, mask, saveAttentionWeights, beamSize); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
+
+    //HYDRA LOG(info, "output.shape = {}", output->shape());
+    //HYDRA debug(output, "Attention output_" + prefix);
+    auto outputReshape = reshape(output, {beamSize, batchSize, maxLengthQuery, dimHeads, dimHeadSize});
+    //HYDRA debug(outputReshape, "Attention reshape first output_" + prefix);
+    // auto outputReshapeSecond = reshape(outputReshapeFirst, {beamSize, batchSize, maxLengthQuery, dimHeads, dimHeadSize});
+    // //HYDRA debug(outputReshapeSecond, "Attention reshape first output_" + prefix);
+    auto outputTransposed = transpose(outputReshape, {0, 1, 3, 2, 4});
+    //HYDRA debug(outputTransposed, "outputTransposed_" + prefix);
+    // //HYDRA LOG(info, "outputReshape.shape = {}", outputReshape->shape());
+    auto outputScaled = outputTransposed * gatingOutputScalars;
+    //HYDRA LOG(info, "outputScaled.shape = {}", outputScaled->shape());
+    //HYDRA debug(outputScaled, "outputScaled_" + prefix);
+    
+    auto outputScaledTransposed = transpose(outputScaled, {0, 1, 3, 2, 4});
+    //HYDRA debug(outputScaledTransposed, "outputScaledTransposed_" + prefix);
+    
+    auto outputScaledReshape = reshape(outputScaledTransposed, {beamSize, batchSize, maxLengthQuery, dimHeads * dimHeadSize});
+
+    // //HYDRA LOG(info, "outputScaled.shape = {}", outputScaled->shape());
+    // auto outputScaledReshape = reshape(outputScaled, {beamSize, batchSize, maxLengthQuery, dimHeads, dimHeadSize});
+    // outputScaledReshape = reshape(outputScaledReshape, {beamSize, batchSize, maxLengthQuery, dimHeads * dimHeadSize});
+    // outputScaledReshape = reshape(outputScaledReshape, {beamSize * batchSize, maxLengthQuery, dimHeads * dimHeadSize});
+    //HYDRA debug(outputScaledReshape, "outputScaledReshape_" + prefix);
+    //HYDRA LOG(info, "outputScaledReshape.shape = {}", outputScaledReshape->shape());
+
+    // bool project = !opt<bool>("transformer-no-projection");
+    // if(project || dimAtt != dimOut) {
+    auto Wo
+      = graph_->param(prefix + "_Wo", {dimAtt, dimOut}, inits::glorot_uniform);
+
+    //HYDRA LOG(info, "Wo.shape = {}", Wo->shape());
+    auto bo = graph_->param(prefix + "_bo", {1, dimOut}, inits::zeros);
+    //HYDRA LOG(info, "bo.shape = {}", bo->shape());
+    auto outputFinal = affine(outputScaledReshape, Wo, bo);
+    // auto outputFinal = affine(outputScaled, Wo, bo);
+    //HYDRA LOG(info, "outputFinal.shape = {}", outputFinal->shape());
+
+    //HYDRA debug(outputFinal, "outputFinal_" + prefix);
+    return outputFinal;
   }
 
   Expr FingerPuppet(std::string prefix,
@@ -520,9 +646,9 @@ public:
     
     //STEP 1 - Initialize Wq, Wk, Wv so that every row is a single head
     
-    //LOG(info, "mask.shape in FingerPuppet {}", mask->shape()); 
-    //LOG(info, "input shape = {}", q->shape());
-    //LOG(info, "dimHeads {} dimHeadSize {}", dimHeads, dimHeadSize);
+    ////HYDRA LOG(info, "mask.shape in FingerPuppet {}", mask->shape()); 
+    ////HYDRA LOG(info, "input shape = {}", q->shape());
+    ////HYDRA LOG(info, "dimHeads {} dimHeadSize {}", dimHeads, dimHeadSize);
     auto Wq = graph_->param(prefix + "_Wq", {dimHeads, dimModel * dimHeadSize}, inits::glorot_uniform);
     auto bq = graph_->param(prefix + "_bq", {dimHeads, dimHeadSize}, inits::zeros);
    
@@ -533,7 +659,7 @@ public:
     auto bv = graph_->param(prefix + "_bv", {dimHeads, dimHeadSize}, inits::zeros);
 
 
-    // debug(Wq, "graph param Wq_" + prefix);
+    // //HYDRA debug(Wq, "graph param Wq_" + prefix);
     // STEP 2 - Initialize gating (constant for now with random binary, seed is set so should return the same vector every time it runs)
     
     // auto gatingOutput = SoftmaxGatingNetwork(prefix, q, dimHeads, dimModel);
@@ -545,45 +671,45 @@ public:
 
     auto gatingOutputScalars = transpose(reshape(gatingOutput, {beamSize * batchSize, 1, 1, dimHeads}), {0, 3, 1, 2});
 
-    //LOG(info, "gatingOutput after reshape= {}", gatingOutput->shape());
-    //LOG(info, "gatingOutputMask = {}", gatingOutputMask->shape());
-    //LOG(info, "gatingOutputScalars = {}", gatingOutputScalars->shape());
-    // debug(gatingOutput, "gatingOutput" + prefix);
+    ////HYDRA LOG(info, "gatingOutput after reshape= {}", gatingOutput->shape());
+    ////HYDRA LOG(info, "gatingOutputMask = {}", gatingOutputMask->shape());
+    ////HYDRA LOG(info, "gatingOutputScalars = {}", gatingOutputScalars->shape());
+    // //HYDRA debug(gatingOutput, "gatingOutput" + prefix);
 
     // auto hoho = gt(gatingOutput, 0.0);
-    // debug(hoho);
+    // //HYDRA debug(hoho);
     
     // STEP 3 - Unionize the selected heads for all sentences
     
     // auto gatingSum = sum(gatingOutput, -3);
-    // //LOG(info, "gatingSum.shape = {}", gatingSum->shape());
-    // debug(gatingSum);
+    // ////HYDRA LOG(info, "gatingSum.shape = {}", gatingSum->shape());
+    // //HYDRA debug(gatingSum);
 
     // auto gatingIndices = reshape(gt(gatingSum, 0), {1, dimHeads});
-    // debug(gatingIndices, "gatingIndices");
-    // //LOG(info, "gatingIndices.shape = {}", gatingIndices->shape());
+    // //HYDRA debug(gatingIndices, "gatingIndices");
+    // ////HYDRA LOG(info, "gatingIndices.shape = {}", gatingIndices->shape());
 
 
     // STEP 4 - Mask heads for each sentence with the gate's output
     // Wq
     auto gatingTransposed = transpose(gatingOutputMask, {0, 2, 1});
-    // debug(gatingTransposed, "gatingTransposed");
-    //LOG(info, "gatingTransposed = {}", gatingTransposed->shape());
+    // //HYDRA debug(gatingTransposed, "gatingTransposed");
+    ////HYDRA LOG(info, "gatingTransposed = {}", gatingTransposed->shape());
     auto WqMasked = Wq * gatingTransposed;
-    //LOG(info, "WqMasked.shape = {}", WqMasked->shape());
+    ////HYDRA LOG(info, "WqMasked.shape = {}", WqMasked->shape());
     auto bqMasked = reshape(bq * gatingTransposed, {batchSize, dimHeads, 1, dimHeadSize});
-    //LOG(info, "bqMasked.shape = {}", bqMasked->shape());
-    // debug(WqMasked, "WqMasked_" + prefix);
+    ////HYDRA LOG(info, "bqMasked.shape = {}", bqMasked->shape());
+    // //HYDRA debug(WqMasked, "WqMasked_" + prefix);
   
 
     // Wk
     auto WkMasked = Wk * gatingTransposed;
-    //LOG(info, "WqMasked.shape = {}", WqMasked->shape());
+    ////HYDRA LOG(info, "WqMasked.shape = {}", WqMasked->shape());
     auto bkMasked = reshape(bk * gatingTransposed, {batchSize, dimHeads, 1, dimHeadSize});
     
     // Wv
     auto WvMasked = Wv * gatingTransposed;
-    //LOG(info, "WqMasked.shape = {}", WqMasked->shape());
+    ////HYDRA LOG(info, "WqMasked.shape = {}", WqMasked->shape());
     auto bvMasked = reshape(bv * gatingTransposed, {batchSize, dimHeads, 1, dimHeadSize});
     
     // STEP 5 - Slice only those heads that are in the selected union
@@ -596,11 +722,11 @@ public:
     
     auto WqSelected = reshape(WqMasked, {batchSize, 1, dimHeads * dimHeadSize, dimModel});
     auto bqSelected = reshape(bqMasked, {batchSize, 1, dimHeads * dimHeadSize, 1});
-    // debug(WqSelected, "WqSelected_" + prefix);
-    // debug(bqSelected, "bqSelected_" + prefix);
+    // //HYDRA debug(WqSelected, "WqSelected_" + prefix);
+    // //HYDRA debug(bqSelected, "bqSelected_" + prefix);
 
-    //LOG(info, "WqSelected.shape = {}", WqSelected->shape());
-    //LOG(info, "bqSelected.shape = {}", bqSelected->shape());
+    ////HYDRA LOG(info, "WqSelected.shape = {}", WqSelected->shape());
+    ////HYDRA LOG(info, "bqSelected.shape = {}", bqSelected->shape());
 
     auto WkSelected = reshape(WkMasked, {batchSize, 1, dimHeads * dimHeadSize, dimModel});
     auto bkSelected = reshape(bkMasked, {batchSize, 1, dimHeads * dimHeadSize, 1});
@@ -619,16 +745,16 @@ public:
 
     auto WvSelectedReshaped = transpose(WvSelected, {0, 1, 3, 2});
     auto bvSelectedReshaped = transpose(bvSelected, {0, 1, 3, 2});
-    // debug(WqSelectedReshaped, "WqSelectedReshaped_" + prefix);
-    // debug(bqSelectedReshaped, "bqSelectedReshaped_" + prefix);
+    // //HYDRA debug(WqSelectedReshaped, "WqSelectedReshaped_" + prefix);
+    // //HYDRA debug(bqSelectedReshaped, "bqSelectedReshaped_" + prefix);
 
 
     // TODO: I THINK IT'S MESSED UP, THERE SHOULDN'T BE TRANSPOSE EDIT: RESHAPE THEN TRANSPOSE
 
     // auto uh = transpose(WqSelected, {0, 2, 1, 3});
-    // debug(uh, "WqSelected transposed " + prefix);
+    // //HYDRA debug(uh, "WqSelected transposed " + prefix);
     // auto WqSelectedReshaped = reshape(uh, {batchSize, 1, dimModel, dimHeads * dimHeadSize});
-    // //LOG(info, "WqSelectedReshaped.shape = {}", WqSelectedReshaped->shape());
+    // ////HYDRA LOG(info, "WqSelectedReshaped.shape = {}", WqSelectedReshaped->shape());
     // auto bqSelectedReshaped = reshape(transpose(bqSelected, {0, 2, 1, 3}), {batchSize, 1, 1, dimHeads * dimHeadSize});
 
     // auto WkSelectedReshaped = reshape(transpose(WkSelected, {0, 2, 1, 3}), {batchSize, 1, dimModel, dimHeads * dimHeadSize});
@@ -636,7 +762,7 @@ public:
 
     // auto WvSelectedReshaped = reshape(transpose(WvSelected, {0, 2, 1, 3}), {batchSize, 1, dimModel, dimHeads * dimHeadSize});
     // auto bvSelectedReshaped = reshape(transpose(bvSelected, {0, 2, 1, 3}), {batchSize, 1, 1, dimHeads * dimHeadSize});
-    // debug(WqSelectedReshaped, "WqSelectedReshaped_" + prefix);
+    // //HYDRA debug(WqSelectedReshaped, "WqSelectedReshaped_" + prefix);
 
     // TODO: I THINK IT'S MESSED UP, THERE SHOULDN'T BE TRANSPOSE END OF CODE BLOCK TO FIX
     
@@ -644,66 +770,66 @@ public:
     // Reshape input queries, keys and values to have 1 more dimension to multiply them with my Q, K, V
 
     auto inputReshape = reshape(q, {beamSize, batchSize, 1, maxLengthQuery, dimModel});
-    // debug(inputReshape, "inputReshape");
-    //LOG(info, "inputReshape.shape = {}", inputReshape->shape()); 
+    // //HYDRA debug(inputReshape, "inputReshape");
+    ////HYDRA LOG(info, "inputReshape.shape = {}", inputReshape->shape()); 
 
     auto keysReshape = reshape(keys, {beamSize, batchSize, 1, maxLengthKeys, dimModel});
-    //LOG(info, "keysReshape.shape = {}", keysReshape->shape()); 
+    ////HYDRA LOG(info, "keysReshape.shape = {}", keysReshape->shape()); 
 
     auto valuesReshape = reshape(values, {beamSize, batchSize, 1, maxLengthValues, dimModel});
-    //LOG(info, "valuesReshape.shape = {}", valuesReshape->shape()); 
+    ////HYDRA LOG(info, "valuesReshape.shape = {}", valuesReshape->shape()); 
     // auto WqFiltered = index_select(WqMasked, 1, gatingIndices);
-    // //LOG(info, "WqFiltered.shape = {}", WqFiltered->shape()); 
+    // ////HYDRA LOG(info, "WqFiltered.shape = {}", WqFiltered->shape()); 
 
     
     auto Q = bdot(inputReshape, WqSelectedReshaped) + bqSelectedReshaped;
-    // debug(Q, "Q_" + prefix);
-    //LOG(info, "Q before split.shape = {}", Q->shape());
+    // //HYDRA debug(Q, "Q_" + prefix);
+    ////HYDRA LOG(info, "Q before split.shape = {}", Q->shape());
 
     auto K = bdot(keysReshape, WkSelectedReshaped) + bkSelectedReshaped;
-    //LOG(info, "K before split.shape = {}", K->shape());
+    ////HYDRA LOG(info, "K before split.shape = {}", K->shape());
     
     auto V = bdot(valuesReshape, WvSelectedReshaped) + bvSelectedReshaped;
-    //LOG(info, "V before split.shape = {}", V->shape());
-    //LOG(info, "prefix = {}", prefix);
+    ////HYDRA LOG(info, "V before split.shape = {}", V->shape());
+    ////HYDRA LOG(info, "prefix = {}", prefix);
 
     
     //Basically do SplitHeads here
     auto QReshape = reshape(Q, {beamSize, batchSize, maxLengthQuery, dimHeads * dimHeadSize});
-    // debug(QReshape, "QReshape_" + prefix);
-    //LOG(info, "QReshape.shape = {}", QReshape->shape());
+    // //HYDRA debug(QReshape, "QReshape_" + prefix);
+    ////HYDRA LOG(info, "QReshape.shape = {}", QReshape->shape());
     auto KReshape = reshape(K, {beamSize, batchSize, maxLengthKeys, dimHeads * dimHeadSize});
-    //LOG(info, "KReshape.shape = {}", KReshape->shape());
+    ////HYDRA LOG(info, "KReshape.shape = {}", KReshape->shape());
     auto VReshape = reshape(V, {beamSize, batchSize, maxLengthValues, dimHeads * dimHeadSize});
-    //LOG(info, "VReshape.shape = {}", VReshape->shape());
+    ////HYDRA LOG(info, "VReshape.shape = {}", VReshape->shape());
     
     
     auto QSplit = reshape(QReshape, {batchSize * beamSize, maxLengthQuery, dimHeads, dimHeadSize}); 
-    // debug(QSplit, "QSplit");
+    // //HYDRA debug(QSplit, "QSplit");
     QSplit = transpose(QSplit, {0, 2, 1, 3});
-    //LOG(info, "QSplit.shape = {}", QSplit->shape());
+    ////HYDRA LOG(info, "QSplit.shape = {}", QSplit->shape());
     
     auto KSplit = reshape(KReshape, {batchSize * beamSize, maxLengthKeys, dimHeads, dimHeadSize}); 
     KSplit = transpose(KSplit, {0, 2, 1, 3}); 
-    //LOG(info, "KSplit.shape = {}", KSplit->shape());
+    ////HYDRA LOG(info, "KSplit.shape = {}", KSplit->shape());
     
     auto VSplit = reshape(VReshape, {batchSize * beamSize, maxLengthValues, dimHeads, dimHeadSize}); 
     VSplit = transpose(VSplit, {0, 2, 1, 3}); 
-    //LOG(info, "VSplit.shape = {}", VSplit->shape());
+    ////HYDRA LOG(info, "VSplit.shape = {}", VSplit->shape());
    
 
     // apply multi-head attention to downscaled inputs
     auto output
         = Attention(prefix, QSplit, KSplit, VSplit, mask, saveAttentionWeights, beamSize); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
-    // debug(output, "Attention output_" + prefix);
-    //LOG(info, "output.shape = {}", output->shape());
+    // //HYDRA debug(output, "Attention output_" + prefix);
+    ////HYDRA LOG(info, "output.shape = {}", output->shape());
     output = output * gatingOutputScalars;
-    // debug(output, "output * gatingOutputScalars_" + prefix);
+    // //HYDRA debug(output, "output * gatingOutputScalars_" + prefix);
 
     // Basically JoinHeads here
     auto outputTransposed = transpose(output, {0, 2, 1, 3});
     auto outputConcat = reshape(outputTransposed, {beamSize, batchSize, maxLengthQuery, dimHeadSize * dimHeads});
-    //LOG(info, "outputConcat.shape = {}", outputConcat->shape());
+    ////HYDRA LOG(info, "outputConcat.shape = {}", outputConcat->shape());
 
 
     // bool project = !opt<bool>("transformer-no-projection");
@@ -711,13 +837,13 @@ public:
     auto Wo
       = graph_->param(prefix + "_Wo", {dimAtt, dimOut}, inits::glorot_uniform);
 
-    //LOG(info, "Wo.shape = {}", Wo->shape());
+    ////HYDRA LOG(info, "Wo.shape = {}", Wo->shape());
     auto bo = graph_->param(prefix + "_bo", {1, dimOut}, inits::zeros);
-    //LOG(info, "bo.shape = {}", bo->shape());
+    ////HYDRA LOG(info, "bo.shape = {}", bo->shape());
     auto outputFinal = affine(outputConcat, Wo, bo);
-    //LOG(info, "outputFinal.shape = {}", outputFinal->shape());
+    ////HYDRA LOG(info, "outputFinal.shape = {}", output,nal->shape());
 
-    // debug(outputFinal, "outputFinal_" + prefix);
+    // //HYDRA debug(outputFinal, "outputFinal_" + prefix);
     return outputFinal;
     // return q;
   }
@@ -737,9 +863,9 @@ public:
     auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
     auto bq = graph_->param(prefix + "_bq", {       1, dimHeads * dimHeadSize}, inits::zeros);
     auto qh = affine(q, Wq, bq);
-    //LOG(info, "qh shape = {}", qh->shape());
+    ////HYDRA LOG(info, "qh shape = {}", qh->shape());
     qh = SplitHeads(qh, dimHeads); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
-    //LOG(info, "Q shape = {}", qh->shape());
+    ////HYDRA LOG(info, "Q shape = {}", qh->shape());
 
     Expr kh;
     // Caching transformation of the encoder that should not be created again.
@@ -774,11 +900,11 @@ public:
     // apply multi-head attention to downscaled inputs
     auto output
         = Attention(prefix, qh, kh, vh, mask, saveAttentionWeights, dimBeam); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
-    //LOG(info, "output.shape = {}", output->shape());
+    ////HYDRA LOG(info, "output.shape = {}", output->shape());
 
     output = JoinHeads(output, dimBeam); // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
 
-    //LOG(info, "output after join shape = {}", output->shape());
+    ////HYDRA LOG(info, "output after join shape = {}", output->shape());
     int dimAtt = output->shape()[-1];
 
     bool project = !opt<bool>("transformer-no-projection");
@@ -789,7 +915,7 @@ public:
       output = affine(output, Wo, bo);
     }
 
-    //LOG(info, "projected output affine = {}", output->shape());
+    ////HYDRA LOG(info, "projected output affine = {}", output->shape());
     return output;
   }
 
@@ -809,12 +935,21 @@ public:
     // Number of heads
     auto heads = opt<int>("transformer-heads");
     auto headDim = opt<int>("transformer-head-dim");
+    auto K = opt<int>("transformer-select-heads");
+    auto type = opt<std::string>("transformer-attention");
 
 
-    //LOG(info, "input just before FingerPuppet = {}", output->shape());
+    ////HYDRA LOG(info, "input just before FingerPuppet = {}", output->shape());
     // multi-head self-attention over previous input
-    // output = MultiHead(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
-    output = FingerPuppet(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
+    if (type == "finger-puppet") {
+      output = FingerPuppet(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
+    }
+    else if (type == "hydra") {
+      output = Hydra(prefix, dimModel, heads, K, headDim, output, keys, values, mask, cache, saveAttentionWeights);
+    }
+    else {
+      output = MultiHead(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
+    }
 
     auto opsPost = opt<std::string>("transformer-postprocess");
     output = postProcess(prefix + "_Wo", opsPost, output, input, dropProb);
@@ -1018,7 +1153,7 @@ public:
   virtual Ptr<EncoderState> build(Ptr<ExpressionGraph> graph,
                                   Ptr<data::CorpusBatch> batch) override {
     graph_ = graph;
-    //LOG(info, "batch size = {}", batch->size());
+    ////HYDRA LOG(info, "batch size = {}", batch->size());
     return apply(batch);
   }
 
@@ -1068,7 +1203,7 @@ public:
                              layerMask);
 
       layer = LayerFFN(prefix_ + "_l" + std::to_string(i) + "_ffn", layer);
-      //LOG(info, "EncoderLayer {}", i);
+      ////HYDRA LOG(info, "EncoderLayer {}", i);
     }
 
     // restore organization of batch and time steps. This is currently required
@@ -1165,7 +1300,7 @@ public:
     auto embeddings  = state->getTargetEmbeddings(); // [-4: beam depth=1, -3: max length, -2: batch size, -1: vector dim]
     auto decoderMask = state->getTargetMask();       // [max length, batch size, 1]  --this is a hypothesis
 
-    // //LOG(info, "decoderMask = {}", decoderMask->shape());
+    // ////HYDRA LOG(info, "decoderMask = {}", decoderMask->shape());
 
     // dropout target words
     float dropoutTrg = inference_ ? 0 : opt<float>("dropout-trg");
@@ -1199,13 +1334,13 @@ public:
     int dimTrgWords = query->shape()[-2];
     int dimBatch    = query->shape()[-3];
     auto selfMask = triangleMask(dimTrgWords);  // [ (1,) 1, max length, max length]
-    // //LOG(info, "self.mask in decoder = {}", selfMask->shape());
+    // ////HYDRA LOG(info, "self.mask in decoder = {}", selfMask->shape());
     if(decoderMask) {
       decoderMask = atleast_nd(decoderMask, 4);             // [ 1, max length, batch size, 1 ]
-      // //LOG(info, "decoderMask atleast_nd = {}", decoderMask->shape());
+      // ////HYDRA LOG(info, "decoderMask atleast_nd = {}", decoderMask->shape());
       decoderMask = reshape(transposeTimeBatch(decoderMask),// [ 1, batch size, max length, 1 ]
                             {1, dimBatch, 1, dimTrgWords}); // [ 1, batch size, 1, max length ]
-      // //LOG(info, "decoderMask reshape = {}", decoderMask->shape());
+      // ////HYDRA LOG(info, "decoderMask reshape = {}", decoderMask->shape());
       selfMask = selfMask * decoderMask;
     }
 
@@ -1245,7 +1380,7 @@ public:
 
     for(int i = 0; i < decDepth; ++i) {
       std::string layerNo = std::to_string(i + 1);
-      //LOG(info, "DecoderLayer {}", i);
+      ////HYDRA LOG(info, "DecoderLayer {}", i);
       if (!tiedLayers.empty())
         layerNo = std::to_string(tiedLayers[i]);
 
@@ -1270,8 +1405,8 @@ public:
       // Iterate over multiple encoders and simply stack the attention blocks
       if(encoderContexts.size() > 0) {
         for(size_t j = 0; j < encoderContexts.size(); ++j) { // multiple encoders are applied one after another
-          //LOG(info, "encoderContexts j = {}", j);
-          //LOG(info, "encoderContexts size = {}", encoderContexts.size());
+          ////HYDRA LOG(info, "encoderContexts j = {}", j);
+          ////HYDRA LOG(info, "encoderContexts size = {}", encoderContexts.size());
           std::string prefix
             = prefix_ + "_l" + layerNo + "_context";
           if(j > 0)
@@ -1294,11 +1429,11 @@ public:
             saveAttentionWeights = i == attLayer;
           }
           
-          //LOG(info, "query shape = {}", query->shape());
-          //LOG(info, "keys shape = {}", encoderContexts[j]->shape());
-          //LOG(info, "values shape = {}", encoderContexts[j]->shape());
-          //LOG(info, "mask shape = {}", encoderMasks[j]->shape());
-          //LOG(info, "query shape = {}", query->shape());
+          ////HYDRA LOG(info, "query shape = {}", query->shape());
+          ////HYDRA LOG(info, "keys shape = {}", encoderContexts[j]->shape());
+          ////HYDRA LOG(info, "values shape = {}", encoderContexts[j]->shape());
+          ////HYDRA LOG(info, "mask shape = {}", encoderMasks[j]->shape());
+          ////HYDRA LOG(info, "query shape = {}", query->shape());
           query = LayerAttention(prefix,
                                  query,
                                  encoderContexts[j], // keys
