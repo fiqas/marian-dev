@@ -166,6 +166,8 @@ void ConfigParser::addOptionsModel(cli::CLIWrapper& cli) {
       "Tie all embedding layers and output layer");
 
   // Transformer options
+  cli.add<bool>("--transformer-load-base",
+      "Load parameters from baseline attention to be used with finger-puppet or hydra.");
   cli.add<std::string>("--transformer-attention",
       "Type of Transformer attention: base, finger-puppet, hydra",
       "base");
