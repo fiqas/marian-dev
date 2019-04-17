@@ -711,6 +711,45 @@ struct TransposeNodeOp : public UnaryNodeOp {
   const std::string color() override { return "orange"; }
 };
 
+// struct IndicesNodeOp : public UnaryNodeOp {
+  // private:
+  // Expr indices_;
+
+
+  // IndicesNodeOp(Expr a) : UnaryNodeOp(a) {}
+
+  // NodeOps forwardOps() override {
+    // // using namespace functional;
+    // // return {NodeOp(Element(_1 = -_2, val_, child(0)->val()))};
+  // }
+
+  // NodeOps backwardOps() override {
+    // // using namespace functional;
+    // // return {NodeOp(Add(-_1, child(0)->grad(), adj_))};
+  // }
+  
+  // Tensor& val() override {
+    // auto childVal = indices_->val();
+
+    // std::vector<float> vectorized;
+
+    // childVal->get(vectorized);
+
+    // val_.reset(
+        // new TensorBase(childVal->memory(), shape(), childVal->type(), childVal->getBackend()));
+    // return val_;
+  // };
+
+  // Tensor& grad() override {
+    // auto childGrad = indices_->grad();
+    // adj_.reset(
+        // new TensorBase(childGrad->memory(), shape(), childGrad->type(), childGrad->getBackend()));
+    // return adj_;
+  // };
+
+  // const std::string type() override { return "indices"; }
+// };
+
 class ReshapeNodeOp : public UnaryNodeOp {
 private:
   Expr reshapee_;
