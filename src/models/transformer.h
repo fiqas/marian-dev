@@ -499,7 +499,8 @@ public:
 
     auto heads = opt<int>("transformer-heads");
     auto headDim = opt<int>("transformer-head-dim");
-    auto K = opt<int>("transformer-select-heads");
+    // auto K = opt<int>("transformer-select-heads");
+    auto type = opt<std::string>("transformer-attention");
 
     // multi-head self-attention over previous input
     // // hoho LOG(info, "HOHO");
