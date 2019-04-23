@@ -226,27 +226,54 @@ public:
 
   // determine the multiplicative-attention probability and performs the associative lookup as well
   // q, k, and v have already been split into multiple heads, undergone any desired linear transform.
-  Expr Attention(std::string /*prefix*/,
+  Expr Attention(std::string  /*prefix*/,
                  Expr q,              // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: split vector dim]
                  Expr k,              // [-4: batch size, -3: num heads, -2: max src length, -1: split vector dim]
                  Expr v,              // [-4: batch size, -3: num heads, -2: max src length, -1: split vector dim]
                  Expr mask = nullptr, // [-4: batch size, -3: num heads broadcast=1, -2: max length broadcast=1, -1: max length]
                  bool saveAttentionWeights = false,
-                 int dimBeam = 1) {
+                 int dimBeam = 1,
+                 bool reshapeMask = false) {
     int dk = k->shape()[-1];
 
     // softmax over batched dot product of query and keys (applied over all
     // time steps and batch entries), also add mask for illegal connections
+    // LOG(info, "Attention Q = {}", q->shape());
+    // LOG(info, "Attention K = {}", k->shape());
+    // LOG(info, "Attention V = {}", v->shape());
 
     // multiplicative attention with flattened softmax
     float scale = 1.0f / std::sqrt((float)dk); // scaling to avoid extreme values due to matrix multiplication
     auto z = bdot(q, k, false, true, scale); // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
+    // hoho debug(z, "bdot(Q,K)");
 
-    // mask out garbage beyond end of sequences
-    z = z + mask;
+    LOG(info, "Attention Q * K.T shape = {}", z->shape());
+    LOG(info, "Attention mask.shape = {}", mask->shape());
+
+    auto maskShape = mask->shape();
+    bool firstStep = std::all_of(maskShape.begin(), maskShape.end(), [](int i) { return i==1; });
+    LOG(info, "Attention mask firstStep = {}", firstStep);
+    
+    if (mask && reshapeMask && !firstStep) {
+      int beamSize = q->shape()[-5];
+      int batchSize = q->shape()[-4];
+      auto maskReshape = reshape(mask, {beamSize, batchSize, mask->shape()[-3], mask->shape()[-2], mask->shape()[-1]});
+      LOG(info, "Attention mask.shape AFTER RESHAPE = {}", maskReshape->shape());
+      // hoho debug(mask, "MASK BASELINE");
+      // hoho debug(maskReshape, "MASK RESHAPE");
+      // mask out garbage beyond end of sequences
+      // z = z + mask;
+      z = z + maskReshape;
+    }
+    else {
+      // hoho debug(mask, "MASK BASELINE");
+      z = z + mask;
+    }
 
     // take softmax along src sequence axis (-1)
     auto weights = softmax(z); // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
+    // hoho debug(weights, "softmax(bdot(Q,K))");
+    LOG(info, "softmax(Q * K.T) shape = {}", weights->shape());
 
     if(saveAttentionWeights)
       collectOneHead(weights, dimBeam);
@@ -258,15 +285,42 @@ public:
 
     // apply attention weights to values
     auto output = bdot(weights, v);   // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: split vector dim]
+    //HYDRA // hoho debug(output, "bdot(softmax,K)");
+    LOG(info, "Attention output softmax(Q * K.T) * V= {}", output->shape());
     return output;
   }
+
+  Expr SoftmaxGatingNetwork(std::string prefix,
+                         Expr input,
+                         int dimHeads,
+                         int dimModel) {
   
+    auto Wg = graph_->param(prefix + "_Wg", {dimModel, dimHeads}, inits::glorot_uniform);
+  
+    debug(Wg, "Wg " + prefix);
+    // auto WgMult = mean(bdot(input, Wg), -2);
+    auto WgMult = bdot(input, Wg);
+    debug(WgMult, "WgMult " + prefix);
+
+    auto WgSum = sum(WgMult, -2);
+    debug(WgSum, "WgSum " + prefix);
+    // hoho debug(input, "input");
+    auto gatingSoftmax = softmax(WgSum);
+    //debug(gatingSoftmax, "gatingSoftmax in SoftmaxGatingNetwork");
+    return gatingSoftmax;
+  
+  }
+
+  //This one translates foreeeeever and overflows GPU memory
   Expr TopKGatingNetwork(std::string prefix,
                      Expr input,
                      int dimHeads,
                      int K,
                      int dimModel) {
 
+
+        
+    // hoho debug(input, "input_" + prefix);
     LOG(info, "Entering TopKGatingNetwork");
     auto Wg = graph_->param(prefix + "_Wg", {dimModel, dimHeads}, inits::glorot_uniform);
     auto bg = graph_->param(prefix + "_bg", {1, dimHeads}, inits::zeros);
@@ -280,63 +334,619 @@ public:
 
     auto WnoiseMult = bdot(input, Wnoise) + bnoise;
     LOG(info, "bdot(input, Wnoise) = {}", WnoiseMult->shape());
+    // auto gatingAvg = mean(gatingMult, -2);
+    // LOG(info, "avg(gatingMult) = {}", gatingAvg->shape());
 
 
     auto softplusOut = log(1 + exp(WnoiseMult));
+    // auto gatingAvg = mean(gatingMult, -2);
+    // LOG(info, "avg(gatingMult) = {}", gatingAvg->shape());
 
     std::random_device rd{};
     std::mt19937 gen{rd()};
     // std::mt19937 gen(1811);
     std::normal_distribution<float> d(0, 1);
 
+    // result = Wg_multi + np.random.standard_normal() * softplus_out
+
     auto gatingResult = sum(WgMult + d(gen) * softplusOut, -2);
+    // std::vector<float> haha;
+
+
+    // gatingResult->val()->get(haha);
+
+    // std::stringstream ss;
+    // for(size_t i = 0; i < haha.size(); ++i)
+    // {
+        // if(i != 0)
+              // ss << ",";
+          // ss << haha[i];
+    // }
+    // std::string gatingResultString = ss.str();
 
     LOG(info, "gatingResult = {}", gatingResult->shape());
+    // LOG(info, "gatingResultString = {}", gatingResultString);
+
+    // hoho debug(gatingResult, "gatingResult_" + prefix);
+
+
+    // MASKING MESSES THINGS UP
+    // int K = 2; // select K heads for each sentence
     
+
+    // graph_->setInference(true);
     auto gatingResultMasked = gatingResult;
+    // auto currentMax = max(gatingResultMasked, -1);
+    // graph_->setInference(true);
     auto currentMax = max(stopGradient(gatingResult), -1);
+    // graph_->setInference(false);
     Expr mask;
+    
 
     for(int i = 0; i < K - 1; i++) {
 
+      // // LOG(info, "K = {}", i);
+      // // hoho debug(gatingResultMasked, "gatingResultMasked before");
+      // // currentMax = max(gatingResultMasked, -1);
+      // // hoho debug(currentMax, "currentMax" + std::to_string(i));
+      // hoho debug(currentMax, "currentmax");
+
+      // // // if(i < K-1) {
         mask = lt(stopGradient(gatingResultMasked), currentMax);
+        // // // LOG(info, "maaaaask = {}", mask->shape());
+        // hoho debug(mask, "mask_" + prefix);
         auto mask2 = (1 - mask) * -99999999.f;
+        // // hoho debug(mask, "mask -inf");
+
         gatingResultMasked = gatingResultMasked + mask2;
-        currentMax = max(stopGradient(gatingResultMasked), -1);
+        // hoho debug(gatingResultMasked, "gatingResultMasked after " + prefix);
+      // // // // }
+      // // // //
+      currentMax = max(stopGradient(gatingResultMasked), -1);
         LOG(info, "currentMax = {}", currentMax->shape());
     }
 
+    // std::vector<float> ugh({0, 1, 0, 1, 0, 1, 0, 1});
+
     auto topKMask = ge(stopGradient(gatingResult), currentMax);
+    // graph_->setInference(false);
+    // auto gatingOutput = graph_->constant({beamSize * batchSize, 1, dimHeads}, inits::from_vector(gatingInit));
+    // auto topKMask = graph_->constant({gatingResult->shape()[0], gatingResult->shape()[1],gatingResult->shape()[2],gatingResult->shape()[3]}, inits::from_vector(ugh));
+    // hoho debug(topKMask, "topKMask binary" + prefix);
+    // topKMask = (1 - topKMask) * -99999999.f;
+    // LOG(info, "topKMask = {}", topKMask->shape());
+    //HYDRA // hoho debug(topKMask, "topKMask");
+
+    // auto maskedGatingOutput = gatingResult + topKMask;
+    // // hoho debug(maskedGatingOutput, "maskedGatingOutput");
+
+    // graph_->setInference(false);
+    // auto gatingSoftmax = softmax(maskedGatingOutput);
     auto gatingSoftmax = softmax(gatingResult, topKMask);
+    //HYDRA // hoho debug(gatingSoftmax, "gatingSoftmax" + prefix);
+    // gatingSoftmax = gatingSoftmax;
+    // hoho debug(gatingSoftmax, "gatingSoftmax after masking");
+
     LOG(info, "gatingSoftmax = {}", gatingSoftmax->shape());
     LOG(info, "Exiting TopKGatingNetwork");
     return gatingSoftmax;
   }
 
-  Expr SoftmaxGatingNetwork(std::string prefix,
-                            Expr input,
-                            int dimHeads,
-                            int dimModel,
-                            int beamSize,
-                            int batchSize) {
 
-    // hoho LOG(info, "input = {}", q->shape()); 
-    auto Wgt = graph_->param(prefix + "_Wgt", {dimModel, dimHeads}, inits::glorot_uniform);
-    // hoho LOG(info, "Wgt = {}", Wgt->shape());
-    
-    auto WgtMult = bdot(q, Wgt);
-    // hoho LOG(info, "bdot(input, Wgt) = {}", WgtMult->shape());
+  // Expr Hydra(std::string prefix,
+                 // int dimOut,
+                 // int dimHeads,
+                 // int dimK,
+                 // int dimHeadSize,
+                 // Expr q,             // [-4: beam depth * batch size, -3: num heads, -2: max q length, -1: split vector dim]
+                 // const Expr &keys,   // [-4: beam depth, -3: batch size, -2: max kv length, -1: vector dim]
+                 // const Expr &values, // [-4: beam depth, -3: batch size, -2: max kv length, -1: vector dim]
+                 // const Expr &mask,   // [-4: batch size, -3: num heads broadcast=1, -2: max length broadcast=1, -1: max length]
+                 // bool cache = false,
+                 // bool saveAttentionWeights = false) {
 
-    auto WgtSum = sum(WgtMult, -2);
-    // hoho LOG(info, "sum -2 = {}", WgtSum->shape());
-    
-    auto gtOut = softmax(WgtSum);
-    // hoho LOG(info, "gtOut = {}", gtOut->shape());
+    // int dimModel = q->shape()[-1];
+    // int maxLengthQuery = q->shape()[-2];
+    // int maxLengthKeys = keys->shape()[-2];
+    // int maxLengthValues = values->shape()[-2];
+    // int batchSize = keys->shape()[-3];
+    // int beamSize = q->shape()[-4];
 
-    auto gtScalars = reshape(gtOut, {beamSize * batchSize, dimHeads, 1, 1});
-    // hoho LOG(info, "gtScalars = {}", gtScalars->shape());
+    // int dimAtt = dimHeads * dimHeadSize;
     
-    return gtScalars;
+    // //STEP 1 - Initialize Wq, Wk, Wv so that every row is a single head
+    
+    // //HYDRA LOG(info, "mask.shape in FingerPuppet {}", mask->shape()); 
+    // //HYDRA LOG(info, "input shape = {}", q->shape());
+    // //HYDRA LOG(info, "dimHeads {} dimHeadSize {}", dimHeads, dimHeadSize);
+    // auto Wq = graph_->param(prefix + "_Wq", {dimHeads, dimModel * dimHeadSize}, inits::glorot_uniform);
+    // auto bq = graph_->param(prefix + "_bq", {dimHeads, dimHeadSize}, inits::zeros);
+   
+    // auto Wk = graph_->param(prefix + "_Wk", {dimHeads, dimModel * dimHeadSize}, inits::glorot_uniform);
+    // auto bk = graph_->param(prefix + "_bk", {dimHeads, dimHeadSize}, inits::zeros);
+    
+    // auto Wv = graph_->param(prefix + "_Wv", {dimHeads, dimModel * dimHeadSize}, inits::glorot_uniform);
+    // auto bv = graph_->param(prefix + "_bv", {dimHeads, dimHeadSize}, inits::zeros);
+
+
+    // //HYDRA // hoho debug(Wq, "graph param Wq_" + prefix);
+
+    // // STEP 2 - Initialize gating (constant for now with random binary, seed is set so should return the same vector every time it runs)
+    
+    // auto gatingOutput = SoftmaxGatingNetwork(prefix, q, dimHeads, dimModel);
+    // // auto gatingOutput = TopKGatingNetwork(prefix, q, dimHeads, dimK, dimModel);
+    // //HYDRA LOG(info, "gatingOutput before reshape= {}", gatingOutput->shape());
+    // // gatingOutput = reshape(gatingOutput, {beamSize, batchSize, 1, dimHeads});
+    // // LOG(info, "gatingOutput after reshape= {}", gatingOutput->shape());
+    // // std::vector<float> gatingInit (beamSize * batchSize * 1 * dimHeads, 1.0); 
+    // // auto gatingOutput = graph_->constant({beamSize, batchSize, 1, dimHeads}, inits::from_vector(gatingInit));
+    // auto gatingOutputMask = gt(gatingOutput, 0);
+
+
+
+    // // auto gatingOutputScalars = transpose(reshape(gatingOutput, {beamSize, batchSize, 1, 1, dimHeads}), {0, 1, 4, 2, 3});
+    // auto gatingOutputScalars = reshape(gatingOutput, {beamSize, batchSize, 1, 1, dimHeads});
+
+    // //HYDRA LOG(info, "gatingOutput after reshape= {}", gatingOutput->shape());
+    // //HYDRA LOG(info, "gatingOutputMask = {}", gatingOutputMask->shape());
+    // //HYDRA LOG(info, "gatingOutputScalars = {}", gatingOutputScalars->shape());
+    // //HYDRA // hoho debug(gatingOutput, "gatingOutput" + prefix);
+    // //HYDRA // hoho debug(gatingOutputScalars, "gatingOutputScalars" + prefix);
+
+    // // auto hoho = gt(gatingOutput, 0.0);
+    // // // hoho debug(hoho);
+    
+    // // STEP 3 - Unionize the selected heads for all sentences
+    
+    // // auto gatingSum = sum(gatingOutput, -3);
+    // // LOG(info, "gatingSum.shape = {}", gatingSum->shape());
+    // // // hoho debug(gatingSum);
+
+    // // auto gatingIndices = reshape(gt(gatingSum, 0), {1, dimHeads});
+    // // // hoho debug(gatingIndices, "gatingIndices");
+    // // LOG(info, "gatingIndices.shape = {}", gatingIndices->shape());
+
+
+    // // STEP 4 - Mask heads for each sentence with the gate's output
+    // // Wq
+    // auto gatingTransposed = transpose(gatingOutputMask, {0, 1, 3, 2});
+    // //HYDRA // hoho debug(gatingTransposed, "gatingTransposed");
+    // //HYDRA LOG(info, "gatingTransposed = {}", gatingTransposed->shape());
+    // auto WqMasked = Wq * gatingTransposed;
+    // //HYDRA LOG(info, "WqMasked.shape = {}", WqMasked->shape());
+    // auto bqMasked = reshape(bq * gatingTransposed, {batchSize, dimHeads, 1, dimHeadSize});
+    // //HYDRA LOG(info, "bqMasked.shape = {}", bqMasked->shape());
+    // //HYDRA // hoho debug(WqMasked, "WqMasked_" + prefix);
+  
+
+    // // Wk
+    // auto WkMasked = Wk * gatingTransposed;
+    // auto bkMasked = reshape(bk * gatingTransposed, {batchSize, dimHeads, 1, dimHeadSize});
+    
+    // // Wv
+    // auto WvMasked = Wv * gatingTransposed;
+    // auto bvMasked = reshape(bv * gatingTransposed, {batchSize, dimHeads, 1, dimHeadSize});
+    
+    // // STEP 5 - Slice only those heads that are in the selected union
+    // //
+    // // TODO Welp, needs to be implemented, because slicing doesnt take Expr and can't iterate 
+    // // Change gatingOutput to vector and get indices manually???
+    
+
+    // // STEP 6 - Reshape back into individual heads
+    
+    // auto WqSelected = reshape(WqMasked, {batchSize, 1, dimHeads * dimHeadSize, dimModel});
+    // auto bqSelected = reshape(bqMasked, {batchSize, 1, dimHeads * dimHeadSize, 1});
+    // //HYDRA // hoho debug(WqSelected, "WqSelected_" + prefix);
+    // //HYDRA // hoho debug(bqSelected, "bqSelected_" + prefix);
+
+    // //HYDRA LOG(info, "WqSelected.shape = {}", WqSelected->shape());
+    // //HYDRA LOG(info, "bqSelected.shape = {}", bqSelected->shape());
+
+    // auto WkSelected = reshape(WkMasked, {batchSize, 1, dimHeads * dimHeadSize, dimModel});
+    // auto bkSelected = reshape(bkMasked, {batchSize, 1, dimHeads * dimHeadSize, 1});
+
+    // auto WvSelected = reshape(WvMasked, {batchSize, 1, dimHeads * dimHeadSize, dimModel});
+    // auto bvSelected = reshape(bvMasked, {batchSize, 1, dimHeads * dimHeadSize, 1});
+
+    // // TODO: Fix?
+    // //
+    
+    // auto WqSelectedReshaped = transpose(WqSelected, {0, 1, 3, 2});
+    // auto bqSelectedReshaped = transpose(bqSelected, {0, 1, 3, 2});
+    
+    // auto WkSelectedReshaped = transpose(WkSelected, {0, 1, 3, 2});
+    // auto bkSelectedReshaped = transpose(bkSelected, {0, 1, 3, 2});
+
+    // auto WvSelectedReshaped = transpose(WvSelected, {0, 1, 3, 2});
+    // auto bvSelectedReshaped = transpose(bvSelected, {0, 1, 3, 2});
+    // //HYDRA LOG(info, "WqTransposed.shape = {}", WqSelectedReshaped->shape());
+    // //HYDRA LOG(info, "bqTransposed.shape = {}", bqSelectedReshaped->shape());
+    // //HYDRA // hoho debug(WqSelectedReshaped, "WqSelectedReshaped_" + prefix);
+    // //HYDRA // hoho debug(bqSelectedReshaped, "bqSelectedReshaped_" + prefix);
+    
+    // // STEP 8 - Calculate Q, K, V
+    // // Reshape input queries, keys and values to have 1 more dimension to multiply them with my Q, K, V
+
+    // auto inputReshape = reshape(q, {beamSize, batchSize, 1, maxLengthQuery, dimModel});
+    // //HYDRA // hoho debug(inputReshape, "inputReshape");
+    // //HYDRA LOG(info, "inputReshape.shape = {}", inputReshape->shape()); 
+
+    // auto keysReshape = reshape(keys, {beamSize, batchSize, 1, maxLengthKeys, dimModel});
+    // //HYDRA // hoho debug(keysReshape, "keysReshape_" + prefix);
+    // //HYDRA LOG(info, "keysReshape.shape = {}", keysReshape->shape()); 
+
+    // auto valuesReshape = reshape(values, {beamSize, batchSize, 1, maxLengthValues, dimModel});
+    // //HYDRA // hoho debug(valuesReshape, "valuesReshape_" + prefix);
+    // //HYDRA LOG(info, "valuesReshape.shape = {}", valuesReshape->shape()); 
+    // // auto WqFiltered = index_select(WqMasked, 1, gatingIndices);
+    // // LOG(info, "WqFiltered.shape = {}", WqFiltered->shape()); 
+
+    
+    // auto Q = bdot(inputReshape, WqSelectedReshaped) + bqSelectedReshaped;
+    // //HYDRA // hoho debug(Q, "Q_" + prefix);
+    // //HYDRA LOG(info, "Q before split.shape = {}", Q->shape());
+
+    // auto K = bdot(keysReshape, WkSelectedReshaped) + bkSelectedReshaped;
+    // //HYDRA // hoho debug(K, "K_" + prefix);
+    // //HYDRA LOG(info, "K before split.shape = {}", K->shape());
+    
+    // auto V = bdot(valuesReshape, WvSelectedReshaped) + bvSelectedReshaped;
+    // //HYDRA // hoho debug(V, "V_" + prefix);
+    // //HYDRA LOG(info, "V before split.shape = {}", V->shape());
+    // //HYDRA LOG(info, "prefix = {}", prefix);
+    
+    // // UNROLL BEAM
+    // auto QReshape = reshape(Q, {beamSize * batchSize, 1, maxLengthQuery, dimHeads * dimHeadSize});
+    // //HYDRA // hoho debug(QReshape, "QReshape_" + prefix);
+    // LOG(info, "QReshape.shape = {}", QReshape->shape());
+    // auto KReshape = reshape(K, {beamSize * batchSize, 1, maxLengthKeys, dimHeads * dimHeadSize});
+    // //HYDRA // hoho debug(KReshape, "KReshape_" + prefix);
+    // LOG(info, "KReshape.shape = {}", KReshape->shape());
+    // auto VReshape = reshape(V, {beamSize * batchSize, 1,  maxLengthValues, dimHeads * dimHeadSize});
+    // //HYDRA // hoho debug(VReshape, "VReshape_" + prefix);
+
+    // // apply multi-head attention to downscaled inputs
+    // auto output
+        // = Attention(prefix, QReshape, KReshape, VReshape, mask, saveAttentionWeights, beamSize); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
+
+    // //HYDRA LOG(info, "output.shape = {}", output->shape());
+    // //HYDRA // hoho debug(output, "Attention output_" + prefix);
+    // auto outputReshape = reshape(output, {beamSize, batchSize, maxLengthQuery, dimHeads, dimHeadSize});
+    // //HYDRA // hoho debug(outputReshape, "Attention reshape first output_" + prefix);
+    // // auto outputReshapeSecond = reshape(outputReshapeFirst, {beamSize, batchSize, maxLengthQuery, dimHeads, dimHeadSize});
+    // // // hoho debug(outputReshapeSecond, "Attention reshape first output_" + prefix);
+    // auto outputTransposed = transpose(outputReshape, {0, 1, 3, 2, 4});
+    // //HYDRA // hoho debug(outputTransposed, "outputTransposed_" + prefix);
+    // LOG(info, "outputReshape.shape = {}", outputReshape->shape());
+    // auto outputScaled = outputTransposed * gatingOutputScalars;
+    // //HYDRA LOG(info, "outputScaled.shape = {}", outputScaled->shape());
+    // //HYDRA // hoho debug(outputScaled, "outputScaled_" + prefix);
+    
+    // auto outputScaledTransposed = transpose(outputScaled, {0, 1, 3, 2, 4});
+    // //HYDRA // hoho debug(outputScaledTransposed, "outputScaledTransposed_" + prefix);
+    
+    // auto outputScaledReshape = reshape(outputScaledTransposed, {beamSize, batchSize, maxLengthQuery, dimHeads * dimHeadSize});
+
+    // LOG(info, "outputScaled.shape = {}", outputScaled->shape());
+    // // auto outputScaledReshape = reshape(outputScaled, {beamSize, batchSize, maxLengthQuery, dimHeads, dimHeadSize});
+    // // outputScaledReshape = reshape(outputScaledReshape, {beamSize, batchSize, maxLengthQuery, dimHeads * dimHeadSize});
+    // // outputScaledReshape = reshape(outputScaledReshape, {beamSize * batchSize, maxLengthQuery, dimHeads * dimHeadSize});
+    // //HYDRA // hoho debug(outputScaledReshape, "outputScaledReshape_" + prefix);
+    // //HYDRA LOG(info, "outputScaledReshape.shape = {}", outputScaledReshape->shape());
+
+    // // bool project = !opt<bool>("transformer-no-projection");
+    // // if(project || dimAtt != dimOut) {
+    // auto Wo
+      // = graph_->param(prefix + "_Wo", {dimAtt, dimOut}, inits::glorot_uniform);
+
+    // //HYDRA LOG(info, "Wo.shape = {}", Wo->shape());
+    // auto bo = graph_->param(prefix + "_bo", {1, dimOut}, inits::zeros);
+    // //HYDRA LOG(info, "bo.shape = {}", bo->shape());
+    // auto outputFinal = affine(outputScaledReshape, Wo, bo);
+    // // auto outputFinal = affine(outputScaled, Wo, bo);
+    // //HYDRA LOG(info, "outputFinal.shape = {}", outputFinal->shape());
+
+    // //HYDRA // hoho debug(outputFinal, "outputFinal_" + prefix);
+    // return outputFinal;
+  // }
+
+  Expr FingerPuppet(std::string prefix,
+                 int dimOut,
+                 int dimHeads,
+                 int dimHeadSize,
+                 Expr q,             // [-4: beam depth * batch size, -3: num heads, -2: max q length, -1: split vector dim]
+                 const Expr &keys,   // [-4: beam depth, -3: batch size, -2: max kv length, -1: vector dim]
+                 const Expr &values, // [-4: beam depth, -3: batch size, -2: max kv length, -1: vector dim]
+                 const Expr &mask,   // [-4: batch size, -3: num heads broadcast=1, -2: max length broadcast=1, -1: max length]
+                 bool cache = false,
+                 bool saveAttentionWeights = false,
+                 bool loadBase = true) {
+    
+    int dimModel = q->shape()[-1];
+    int maxLengthQuery = q->shape()[-2];
+    int maxLengthKeys = keys->shape()[-2];
+    int maxLengthValues = values->shape()[-2];
+    int batchSize = keys->shape()[-3];
+    int beamSize = q->shape()[-4];
+
+    // hoho debug(q, "input"); 
+    LOG(info, "mask.shape in FingerPuppet {}", mask->shape()); 
+    LOG(info, "input shape = {}", q->shape());
+    LOG(info, "dimHeads {} dimHeadSize {}", dimHeads, dimHeadSize);
+    LOG(info, "prefix = {}", prefix);
+    int dimAtt = dimHeads * dimHeadSize;
+
+
+    // INITIALIZE GATING NETWORK
+    
+    // auto gatingOutput = SoftmaxGatingNetwork(prefix, q, dimHeads, dimModel);
+    auto gatingOutput = TopKGatingNetwork(prefix, q, dimHeads, 4, dimModel);
+    // gatingOutput = reshape(gatingOutput, {beamSize * batchSize, 1, dimHeads});
+    //
+
+    // std::vector<float> gatingInit = {1, 1, 1, 1, 1, 1, 1, 0};
+    // // int sizeOfVec = gatingInit.size();
+    // gatingInit.reserve((beamSize * batchSize - 1) * dimHeads);
+    // for(int i = 0; i < (beamSize * batchSize - 1); ++i) {
+      // gatingInit.insert(gatingInit.end(), gatingInit.begin(), gatingInit.begin() + dimHeads);
+    // }
+
+    // float arr[] =
+      // {1, 1, 1, 1, 0, 0, 0, 0,
+       // 1, 1, 1, 0, 0, 1, 0, 0,
+       // 0, 1, 1, 1, 0, 1, 0, 0}; 
+    // std::vector<float> gatingInit( arr, arr+3 );
+    // std::vector<float> gatingInit (beamSize * batchSize * 1 * dimHeads, 1);
+    // auto gatingOutput = graph_->constant({beamSize * batchSize, 1, dimHeads}, inits::from_vector(gatingInit));
+    // auto gatingOutput = graph_->constant({beamSize * batchSize, dimHeads}, inits::from_vector(gatingInit));
+    auto gatingOutputMask = gt(gatingOutput, 0);
+
+
+    // auto gatingVectorExpr = reshape(gatingOutputMask, {dimHeads});
+
+   // LOG(info, "gatingVectorExpr shape = {}", gatingVectorExpr->shape()); 
+    // std::vector<float> gatingVectorize;
+
+    // gatingOutput->val()->get(gatingVectorize);
+
+    // std::stringstream ss;
+    // for(size_t i = 0; i < gatingVectorize.size(); ++i)
+    // {
+        // if(i != 0)
+              // ss << ",";
+          // ss << gatingVectorize[i];
+    // }
+    // std::string s = ss.str();
+
+    // LOG(info, "vector length = {}", gatingVectorize.size());
+    // LOG(info, "vectorized gatingOutputMask = {}", s);
+
+    // auto gatingOutputScalars = transpose(reshape(gatingOutput, {beamSize, batchSize, 1, dimHeads, 1}), {0, 1, 4, 2, 3});
+    auto gatingOutputScalars = reshape(gatingOutput, {beamSize, batchSize, dimHeads, 1, 1});
+
+    LOG(info, "gatingOutput after reshape= {}", gatingOutput->shape());
+    LOG(info, "gatingOutputMask = {}", gatingOutputMask->shape());
+    LOG(info, "gatingOutputScalars = {}", gatingOutputScalars->shape());
+    // hoho debug(gatingOutputScalars, "gatingOutputScalars_" + prefix);
+    auto gatingTransposed = reshape(gatingOutputMask, {beamSize * batchSize, 1, dimHeads, 1});
+
+    // hoho debug(gatingTransposed, "gatingTransposed");
+    LOG(info, "gatingTransposed = {}", gatingTransposed->shape());
+
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+    // CALCULATE Q (which we should do always because query is new)
+   
+    // Initialize Wq, bq 
+    auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+    auto bq = graph_->param(prefix + "_bq", {       1, dimHeads * dimHeadSize}, inits::zeros);
+    // hoho debug(Wq, "Wq_" + prefix);
+    // hoho debug(bq, "Wq_" + prefix);
+
+    // Mask Wq by gating network output
+    auto WqReshape = reshape(Wq, {dimModel, dimHeads, dimHeadSize});
+    auto bqReshape = reshape(bq, {1, dimHeads, dimHeadSize});
+
+    // auto bqSlice = index_select(bqReshape, 1, gatingVectorExpr);
+    // LOG(info, "bqSlice shape = {}", bqSlice);
+
+    LOG(info, "WqReshape = {}", WqReshape->shape());
+    LOG(info, "bqReshape = {}", bqReshape->shape());
+    auto WqMasked = WqReshape * gatingTransposed;
+    auto bqMasked = reshape(bqReshape * gatingTransposed, {batchSize, dimHeads, 1, dimHeadSize});
+    
+    LOG(info, "WqMasked.shape = {}", WqMasked->shape());
+    LOG(info, "bqMasked.shape = {}", bqMasked->shape());
+    // hoho debug(WqMasked, "WqMasked_" + prefix);
+    // hoho debug(bqMasked, "bqMasked_" + prefix);
+    
+
+    // Reshape back into individual heads, prepare dimensions of Wq for bdot later
+    auto WqSelectedReshaped = transpose(WqMasked, {0, 2, 1, 3});
+    auto WqBeam = reshape(WqSelectedReshaped, {1, batchSize, dimHeads, dimModel, dimHeadSize});
+    auto WqRepeat = repeat(WqBeam, beamSize, -5);
+    // auto bqSelectedReshaped = transpose(bqMasked, {0, 2, 1, 3});
+    auto bqSelectedReshaped = bqMasked;
+
+    // hoho debug(WqSelectedReshaped, "WqSelectedReshaped_" + prefix);
+    // // hoho debug(WqBeam, "WqBeam_" + prefix);
+    // // hoho debug(WqRepeat, "WqRepeat_" + prefix);
+    // hoho debug(WqSelectedReshaped, "WqSelectedReshaped_" + prefix);
+    // hoho debug(bqSelectedReshaped, "bqSelectedReshaped_" + prefix);
+    LOG(info, "WqSelectedReshaped.shape = {}", WqSelectedReshaped->shape());
+    LOG(info, "WqBeam.shape = {}", WqBeam->shape());
+    LOG(info, "WqRepeat.shape = {}", WqRepeat->shape());
+    LOG(info, "bqSelectedReshaped.shape = {}", bqSelectedReshaped->shape());
+    
+
+    // Prepare input dimensions for bdot later
+    auto inputReshape = reshape(q, {beamSize, batchSize, 1, maxLengthQuery, dimModel});
+    // // hoho debug(inputReshape, "inputReshape");
+    LOG(info, "inputReshape.shape = {}", inputReshape->shape()); 
+    
+    auto inputRepeat = repeat(inputReshape, 8, -3);
+    LOG(info, "inputRepeat = {}", inputRepeat->shape());
+
+    
+    // Calculate Q itself
+    
+    auto Q = bdot(inputRepeat, WqRepeat) + bqSelectedReshaped;
+    // auto Q = affine(inputRepeat, WqSelectedReshaped, bqSelectedReshaped);
+    // hoho debug(Q, "Q_" + prefix);
+    LOG(info, "Q.shape = {}", Q->shape());
+
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+    // Calculate K and V or take them from cache
+
+    Expr K;
+    // Caching transformation of the encoder that should not be created again.
+    // @TODO: set this automatically by memoizing encoder context and
+    // memoization propagation (short-term)
+    if (!cache || (cache && cache_.count(prefix + "_keys") == 0)) {
+      
+      LOG(info, "K calculating...");
+      // Initialize Wk, bk
+      auto Wk = graph_->param(prefix + "_Wk", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+      auto bk = graph_->param(prefix + "_bk", {       1, dimHeads * dimHeadSize}, inits::zeros);
+      
+      
+      // Mask Wk by gating network output
+      auto WkReshape = reshape(Wk, {dimModel, dimHeads, dimHeadSize});
+      auto bkReshape = reshape(bk, {1, dimHeads, dimHeadSize});
+
+      auto WkMasked = WkReshape * gatingTransposed;
+      auto bkMasked = reshape(bkReshape * gatingTransposed, {batchSize, dimHeads, 1, dimHeadSize});
+      LOG(info, "WkMasked.shape = {}", WkMasked->shape());
+      LOG(info, "bkMasked.shape = {}", bkMasked->shape());
+      // // hoho debug(WkMasked, "WkMasked_" + prefix);
+      // // hoho debug(bkMasked, "bkMasked_" + prefix);
+    
+      // Reshape back into individual heads, prepare dimensions of Wk for bdot later
+      auto WkSelectedReshaped = transpose(WkMasked, {0, 2, 1, 3});
+      auto WkBeam = reshape(WkSelectedReshaped, {1, batchSize, dimHeads, dimModel, dimHeadSize});
+      auto WkRepeat = repeat(WkBeam, beamSize, -5);
+      auto bkSelectedReshaped = bkMasked;
+      // auto bkSelectedReshaped = transpose(bkMasked, {0, 2, 1, 3});
+      
+      
+      // Prepare input dimensions for bdot later
+      auto keysReshape = reshape(keys, {beamSize, batchSize, 1, maxLengthKeys, dimModel});
+      auto keysRepeat = repeat(keysReshape, 8, -3);
+      LOG(info, "keysReshape.shape = {}", keysReshape->shape()); 
+
+      
+      // Calculate K itself
+      K = bdot(keysRepeat, WkRepeat) + bkSelectedReshaped;
+      // auto K = affine(keysRepeat, WkSelectedReshaped, bkSelectedReshaped);
+      // hoho debug(K, "K_" + prefix);
+      LOG(info, "K.shape = {}", K->shape());
+      
+      cache_[prefix + "_keys"] = K;
+      // hoho debug(K, "K CALCULATED");
+    }
+    else {
+      LOG(info, "K from cache");
+      K = cache_[prefix + "_keys"];
+      // hoho debug(K, "K CACHE");
+    }
+
+    // LOG(info, "Finished K = {}", K->shape());
+
+    Expr V;
+    if (!cache || (cache && cache_.count(prefix + "_values") == 0)) {
+      LOG(info, "K calculating...");
+      
+      // Initialize Wv, bv
+      auto Wv = graph_->param(prefix + "_Wv", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+      auto bv = graph_->param(prefix + "_bv", {       1, dimHeads * dimHeadSize}, inits::zeros);
+      
+      
+      // Mask Wv by gating network output
+      auto WvReshape = reshape(Wv, {dimModel, dimHeads, dimHeadSize});
+      auto bvReshape = reshape(bv, {1, dimHeads, dimHeadSize});
+      
+      auto WvMasked = WvReshape * gatingTransposed;
+      auto bvMasked = reshape(bvReshape * gatingTransposed, {batchSize, dimHeads, 1, dimHeadSize});
+      LOG(info, "WvMasked.shape = {}", WvMasked->shape());
+      LOG(info, "bvMasked.shape = {}", bvMasked->shape());
+      // // hoho debug(WvMasked, "WvMasked_" + prefix);
+      // // hoho debug(bvMasked, "bvMasked_" + prefix);
+     
+
+      // Reshape back into individual heads, prepare dimensions of Wv for bdot later
+      auto WvSelectedReshaped = transpose(WvMasked, {0, 2, 1, 3});
+      auto WvBeam = reshape(WvSelectedReshaped, {1, batchSize, dimHeads, dimModel, dimHeadSize});
+      auto WvRepeat = repeat(WvBeam, beamSize, -5);
+      auto bvSelectedReshaped = bvMasked;
+      // auto bvSelectedReshaped = transpose(bvMasked, {0, 2, 1, 3});
+
+
+      // Prepare input dimensions for bdot later
+
+      auto valuesReshape = reshape(values, {beamSize, batchSize, 1, maxLengthValues, dimModel});
+      auto valuesRepeat = repeat(valuesReshape, 8, -3);
+      LOG(info, "valuesReshape.shape = {}", valuesReshape->shape()); 
+
+
+      // Calculate V itself
+      V = bdot(valuesRepeat, WvRepeat) + bvSelectedReshaped;
+      // auto V = affine(valuesRepeat, WvSelectedReshaped, bvSelectedReshaped);
+      // hoho debug(V, "V_" + prefix);
+      LOG(info, "V.shape = {}", V->shape());
+
+      cache_[prefix + "_values"] = V;
+      // hoho debug(V, "V CALCULATED");
+      LOG(info, "CACHE V PASSED");
+    } else {
+      LOG(info, "V from cache");
+      V = cache_[prefix + "_values"];
+      // hoho debug(V, "V CACHE");
+    }
+
+    LOG(info, "Finished V = {}", V->shape());
+    // LOG(info, "Finished Q, K, V = {}", Q->shape(), K->shape(), V->shape());
+    // Apply multi-head attention
+    auto output
+        = Attention(prefix, Q, K, V, mask, saveAttentionWeights, beamSize, true); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
+    // hoho debug(output, "Attention output_" + prefix);
+    LOG(info, "output.shape = {}", output->shape());
+    output = output * gatingOutputScalars;
+    LOG(info, "output * gatingOutputScalars.shape = {}", output->shape());
+    // hoho debug(output, "output * gatingOutputScalars_" + prefix);
+
+    // Basically JoinHeads here
+    auto outputTransposed = transpose(output, {0, 1, 3, 2, 4});
+    LOG(info, "outputTransposed.shape = {}", outputTransposed->shape());
+    auto outputConcat = reshape(outputTransposed, {beamSize, batchSize, maxLengthQuery, dimHeadSize * dimHeads});
+    LOG(info, "outputConcat.shape = {}", outputConcat->shape());
+
+    Expr outputFinal;
+    bool project = !opt<bool>("transformer-no-projection");
+    if(project || dimAtt != dimOut) {
+
+      LOG(info, "DOING PROJECTION WITH Wo");
+      auto Wo
+        = graph_->param(prefix + "_Wo", {dimAtt, dimOut}, inits::glorot_uniform);
+      auto bo = graph_->param(prefix + "_bo", {1, dimOut}, inits::zeros);
+
+      LOG(info, "Wo.shape = {}", Wo->shape());
+      LOG(info, "bo.shape = {}", bo->shape());
+      outputFinal = affine(outputConcat, Wo, bo);
+      LOG(info, "outputFinal.shape = {}", outputFinal->shape());
+    }
+    else {
+      outputFinal = outputConcat;
+      LOG(info, "outputFinal.shape = {}", outputFinal->shape());
+    }
+
+      // hoho debug(outputFinal, "outputFinal_" + prefix);
+      return outputFinal;
   }
   
   Expr WeightedMultiHead(std::string prefix,
@@ -350,15 +960,18 @@ public:
                  bool cache = false,
                  bool saveAttentionWeights = false) {
     int dimModel = q->shape()[-1];
-    int batchSize = q->shape()[-3];
-    int beamSize = q->shape()[-4];
-   
-    auto gtScalars = SoftmaxGatingNetwork(prefix, q, dimHeads, dimModel, beamSize, batchSize); 
-    
+    // @TODO: good opportunity to implement auto-batching here or do something manually?
     auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
     auto bq = graph_->param(prefix + "_bq", {       1, dimHeads * dimHeadSize}, inits::zeros);
     auto qh = affine(q, Wq, bq);
+    // hoho debug(q, "input");
+    LOG(info, "qh shape = {}", qh->shape());
+    // hoho debug(Wq, "Wq_" + prefix);
+    // hoho debug(bq, "bq_" + prefix);
+    // hoho debug(qh, "Q before splitHeads_" + prefix);
     qh = SplitHeads(qh, dimHeads); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
+    LOG(info, "Q shape = {}", qh->shape());
+    // hoho debug(qh, "Q after splitHeads_" + prefix);
 
     Expr kh;
     // Caching transformation of the encoder that should not be created again.
@@ -371,9 +984,11 @@ public:
       kh = affine(keys, Wk, bk);     // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
       kh = SplitHeads(kh, dimHeads); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
       cache_[prefix + "_keys"] = kh;
+      // hoho debug(kh, "K CALCULATED");
     }
     else {
-      kh = cache_[prefix + "_keys"];
+      kh = cache_[prefix + "_keys"] * 1;
+      // hoho debug(kh, "K CACHE");
     }
 
     Expr vh;
@@ -384,83 +999,10 @@ public:
       vh = affine(values, Wv, bv); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
       vh = SplitHeads(vh, dimHeads);
       cache_[prefix + "_values"] = vh;
+      // hoho debug(vh, "V CALCULATED");
     } else {
-      vh = cache_[prefix + "_values"];
-    }
-
-    int dimBeam = q->shape()[-4];
-
-    // hoho LOG(info, "qh = {}", qh->shape());
-    // hoho LOG(info, "kh = {}", kh->shape());
-    // hoho LOG(info, "vh = {}", vh->shape());
-    // hoho LOG(info, "mask = {}", mask->shape());
-    // apply multi-head attention to downscaled inputs
-    auto output
-        = Attention(prefix, qh, kh, vh, mask, saveAttentionWeights, dimBeam); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
-
-    // hoho LOG(info, "output = {}", output->shape());
-
-    auto outputScaled = output * gtScalars;
-    // hoho LOG(info, "outputScaled = {}", outputScaled->shape());
-    auto outputFinal = JoinHeads(outputScaled, dimBeam); // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
-    // hoho LOG(info, "JoinHeads(outputScaled) = {}", outputFinal->shape());
-
-    int dimAtt = outputFinal->shape()[-1];
-
-    bool project = !opt<bool>("transformer-no-projection");
-    if(project || dimAtt != dimOut) {
-      auto Wo
-        = graph_->param(prefix + "_Wo", {dimAtt, dimOut}, inits::glorot_uniform);
-      auto bo = graph_->param(prefix + "_bo", {1, dimOut}, inits::zeros);
-      // hoho LOG(info, "Wo = {}", Wo->shape());
-      outputFinal = affine(outputFinal, Wo, bo);
-    }
-
-    return outputFinal;
-  }
-
-  Expr MultiHead(std::string prefix,
-                 int dimOut,
-                 int dimHeads,
-                 Expr q,             // [-4: beam depth * batch size, -3: num heads, -2: max q length, -1: split vector dim]
-                 const Expr &keys,   // [-4: beam depth, -3: batch size, -2: max kv length, -1: vector dim]
-                 const Expr &values, // [-4: beam depth, -3: batch size, -2: max kv length, -1: vector dim]
-                 const Expr &mask,   // [-4: batch size, -3: num heads broadcast=1, -2: max length broadcast=1, -1: max length]
-                 bool cache = false,
-                 bool saveAttentionWeights = false) {
-    int dimModel = q->shape()[-1];
-    // @TODO: good opportunity to implement auto-batching here or do something manually?
-    auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimModel}, inits::glorot_uniform);
-    auto bq = graph_->param(prefix + "_bq", {       1, dimModel}, inits::zeros);
-    auto qh = affine(q, Wq, bq);
-    qh = SplitHeads(qh, dimHeads); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
-
-    Expr kh;
-    // Caching transformation of the encoder that should not be created again.
-    // @TODO: set this automatically by memoizing encoder context and
-    // memoization propagation (short-term)
-    if (!cache || (cache && cache_.count(prefix + "_keys") == 0)) {
-      auto Wk = graph_->param(prefix + "_Wk", {dimModel, dimModel}, inits::glorot_uniform);
-      auto bk = graph_->param(prefix + "_bk", {1,        dimModel}, inits::zeros);
-
-      kh = affine(keys, Wk, bk);     // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
-      kh = SplitHeads(kh, dimHeads); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
-      cache_[prefix + "_keys"] = kh;
-    }
-    else {
-      kh = cache_[prefix + "_keys"];
-    }
-
-    Expr vh;
-    if (!cache || (cache && cache_.count(prefix + "_values") == 0)) {
-      auto Wv = graph_->param(prefix + "_Wv", {dimModel, dimModel}, inits::glorot_uniform);
-      auto bv = graph_->param(prefix + "_bv", {1,        dimModel}, inits::zeros);
-
-      vh = affine(values, Wv, bv); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
-      vh = SplitHeads(vh, dimHeads);
-      cache_[prefix + "_values"] = vh;
-    } else {
-      vh = cache_[prefix + "_values"];
+      vh = cache_[prefix + "_values"] * 1;
+      // hoho debug(vh, "V CACHE");
     }
 
     int dimBeam = q->shape()[-4];
@@ -468,9 +1010,14 @@ public:
     // apply multi-head attention to downscaled inputs
     auto output
         = Attention(prefix, qh, kh, vh, mask, saveAttentionWeights, dimBeam); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
+    LOG(info, "output.shape = {}", output->shape());
 
+    // hoho debug(output, "Attention output_" + prefix);
+    
     output = JoinHeads(output, dimBeam); // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
 
+    // hoho debug(output, "Attention output after JoinHeads_" + prefix);
+    LOG(info, "output after joinHeads shape = {}", output->shape());
     int dimAtt = output->shape()[-1];
 
     bool project = !opt<bool>("transformer-no-projection");
@@ -481,6 +1028,92 @@ public:
       output = affine(output, Wo, bo);
     }
 
+    LOG(info, "projected output affine = {}", output->shape());
+    // hoho debug(output, "outputFinal_" + prefix);
+    return output;
+  }
+
+  Expr MultiHead(std::string prefix,
+                 int dimOut,
+                 int dimHeads,
+                 int dimHeadSize,
+                 Expr q,             // [-4: beam depth * batch size, -3: num heads, -2: max q length, -1: split vector dim]
+                 const Expr &keys,   // [-4: beam depth, -3: batch size, -2: max kv length, -1: vector dim]
+                 const Expr &values, // [-4: beam depth, -3: batch size, -2: max kv length, -1: vector dim]
+                 const Expr &mask,   // [-4: batch size, -3: num heads broadcast=1, -2: max length broadcast=1, -1: max length]
+                 bool cache = false,
+                 bool saveAttentionWeights = false) {
+    int dimModel = q->shape()[-1];
+    // @TODO: good opportunity to implement auto-batching here or do something manually?
+    auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+    auto bq = graph_->param(prefix + "_bq", {       1, dimHeads * dimHeadSize}, inits::zeros);
+    auto qh = affine(q, Wq, bq);
+    // hoho debug(q, "input");
+    LOG(info, "qh shape = {}", qh->shape());
+    // hoho debug(Wq, "Wq_" + prefix);
+    // hoho debug(bq, "bq_" + prefix);
+    // hoho debug(qh, "Q before splitHeads_" + prefix);
+    qh = SplitHeads(qh, dimHeads); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
+    LOG(info, "Q shape = {}", qh->shape());
+    // hoho debug(qh, "Q after splitHeads_" + prefix);
+
+    Expr kh;
+    // Caching transformation of the encoder that should not be created again.
+    // @TODO: set this automatically by memoizing encoder context and
+    // memoization propagation (short-term)
+    if (!cache || (cache && cache_.count(prefix + "_keys") == 0)) {
+      auto Wk = graph_->param(prefix + "_Wk", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+      auto bk = graph_->param(prefix + "_bk", {1,        dimHeads * dimHeadSize}, inits::zeros);
+
+      kh = affine(keys, Wk, bk);     // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
+      kh = SplitHeads(kh, dimHeads); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
+      cache_[prefix + "_keys"] = kh;
+      // hoho debug(kh, "K CALCULATED");
+    }
+    else {
+      kh = cache_[prefix + "_keys"] * 1;
+      // hoho debug(kh, "K CACHE");
+    }
+
+    Expr vh;
+    if (!cache || (cache && cache_.count(prefix + "_values") == 0)) {
+      auto Wv = graph_->param(prefix + "_Wv", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+      auto bv = graph_->param(prefix + "_bv", {1,        dimHeads * dimHeadSize}, inits::zeros);
+
+      vh = affine(values, Wv, bv); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
+      vh = SplitHeads(vh, dimHeads);
+      cache_[prefix + "_values"] = vh;
+      // hoho debug(vh, "V CALCULATED");
+    } else {
+      vh = cache_[prefix + "_values"] * 1;
+      // hoho debug(vh, "V CACHE");
+    }
+
+    int dimBeam = q->shape()[-4];
+
+    // apply multi-head attention to downscaled inputs
+    auto output
+        = Attention(prefix, qh, kh, vh, mask, saveAttentionWeights, dimBeam); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
+    LOG(info, "output.shape = {}", output->shape());
+
+    // hoho debug(output, "Attention output_" + prefix);
+    
+    output = JoinHeads(output, dimBeam); // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
+
+    // hoho debug(output, "Attention output after JoinHeads_" + prefix);
+    LOG(info, "output after joinHeads shape = {}", output->shape());
+    int dimAtt = output->shape()[-1];
+
+    bool project = !opt<bool>("transformer-no-projection");
+    if(project || dimAtt != dimOut) {
+      auto Wo
+        = graph_->param(prefix + "_Wo", {dimAtt, dimOut}, inits::glorot_uniform);
+      auto bo = graph_->param(prefix + "_bo", {1, dimOut}, inits::zeros);
+      output = affine(output, Wo, bo);
+    }
+
+    LOG(info, "projected output affine = {}", output->shape());
+    // hoho debug(output, "outputFinal_" + prefix);
     return output;
   }
 
@@ -497,20 +1130,30 @@ public:
     auto opsPre = opt<std::string>("transformer-preprocess");
     auto output = preProcess(prefix + "_Wo", opsPre, input, dropProb);
 
+    // Number of heads
     auto heads = opt<int>("transformer-heads");
     auto headDim = opt<int>("transformer-head-dim");
-    auto K = opt<int>("transformer-select-heads");
+    // auto K = opt<int>("transformer-select-heads");
+    auto type = opt<std::string>("transformer-attention");
 
+    // auto load = opt<bool>("transformer-load-base");
+
+    // auto EncoderOnly = (prefix.find("encoder") != std::string::npos);
+    LOG(info, "prefix = {}", prefix); 
+    LOG(info, "input just before FingerPuppet = {}", output->shape());
     // multi-head self-attention over previous input
-    // // hoho LOG(info, "HOHO");
-    auto EncoderOnly = (prefix.find("encoder") != std::string::npos);
-    if (type == "weighted" && EncoderOnly) {
+    // if (type == "finger-puppet" && EncoderOnly) {
+      // output = FingerPuppet(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights, load);
+    // }
+    // else if (type == "hydra" && EncoderOnly) {
+      // output = Hydra(prefix, dimModel, heads, K, headDim, output, keys, values, mask, cache, saveAttentionWeights);
+    // }
+    // else if (type == "weighted") {
       output = WeightedMultiHead(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
-    }
-
-    else {
-      output = MultiHead(prefix, dimModel, heads, output, keys, values, mask, cache, saveAttentionWeights);
-    }
+    // }
+    // else {
+      // output = MultiHead(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
+    // }
 
     auto opsPost = opt<std::string>("transformer-postprocess");
     output = postProcess(prefix + "_Wo", opsPost, output, input, dropProb);
@@ -714,6 +1357,7 @@ public:
   virtual Ptr<EncoderState> build(Ptr<ExpressionGraph> graph,
                                   Ptr<data::CorpusBatch> batch) override {
     graph_ = graph;
+    LOG(info, "batch size = {}", batch->size());
     return apply(batch);
   }
 
@@ -763,6 +1407,7 @@ public:
                              layerMask);
 
       layer = LayerFFN(prefix_ + "_l" + std::to_string(i) + "_ffn", layer);
+      LOG(info, "EncoderLayer {}", i);
     }
 
     // restore organization of batch and time steps. This is currently required
@@ -859,6 +1504,8 @@ public:
     auto embeddings  = state->getTargetEmbeddings(); // [-4: beam depth=1, -3: max length, -2: batch size, -1: vector dim]
     auto decoderMask = state->getTargetMask();       // [max length, batch size, 1]  --this is a hypothesis
 
+    // LOG(info, "decoderMask = {}", decoderMask->shape());
+
     // dropout target words
     float dropoutTrg = inference_ ? 0 : opt<float>("dropout-trg");
     if(dropoutTrg) {
@@ -891,10 +1538,13 @@ public:
     int dimTrgWords = query->shape()[-2];
     int dimBatch    = query->shape()[-3];
     auto selfMask = triangleMask(dimTrgWords);  // [ (1,) 1, max length, max length]
+    // LOG(info, "self.mask in decoder = {}", selfMask->shape());
     if(decoderMask) {
       decoderMask = atleast_nd(decoderMask, 4);             // [ 1, max length, batch size, 1 ]
+      // LOG(info, "decoderMask atleast_nd = {}", decoderMask->shape());
       decoderMask = reshape(transposeTimeBatch(decoderMask),// [ 1, batch size, max length, 1 ]
                             {1, dimBatch, 1, dimTrgWords}); // [ 1, batch size, 1, max length ]
+      // LOG(info, "decoderMask reshape = {}", decoderMask->shape());
       selfMask = selfMask * decoderMask;
     }
 
@@ -934,6 +1584,7 @@ public:
 
     for(int i = 0; i < decDepth; ++i) {
       std::string layerNo = std::to_string(i + 1);
+      LOG(info, "DecoderLayer {}", i);
       if (!tiedLayers.empty())
         layerNo = std::to_string(tiedLayers[i]);
 
@@ -958,6 +1609,8 @@ public:
       // Iterate over multiple encoders and simply stack the attention blocks
       if(encoderContexts.size() > 0) {
         for(size_t j = 0; j < encoderContexts.size(); ++j) { // multiple encoders are applied one after another
+          LOG(info, "encoderContexts j = {}", j);
+          LOG(info, "encoderContexts size = {}", encoderContexts.size());
           std::string prefix
             = prefix_ + "_l" + layerNo + "_context";
           if(j > 0)
@@ -979,7 +1632,12 @@ public:
 
             saveAttentionWeights = i == attLayer;
           }
-
+          
+          LOG(info, "query shape = {}", query->shape());
+          LOG(info, "keys shape = {}", encoderContexts[j]->shape());
+          LOG(info, "values shape = {}", encoderContexts[j]->shape());
+          LOG(info, "mask shape = {}", encoderMasks[j]->shape());
+          LOG(info, "query shape = {}", query->shape());
           query = LayerAttention(prefix,
                                  query,
                                  encoderContexts[j], // keys
