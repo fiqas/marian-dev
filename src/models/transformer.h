@@ -324,7 +324,7 @@ public:
     auto Wgt = graph_->param(prefix + "_Wgt", {dimModel, dimHeads}, inits::glorot_uniform);
     // hoho LOG(info, "Wgt = {}", Wgt->shape());
     
-    auto WgtMult = bdot(q, Wgt);
+    auto WgtMult = bdot(input, Wgt);
     // hoho LOG(info, "bdot(input, Wgt) = {}", WgtMult->shape());
 
     auto WgtSum = sum(WgtMult, -2);
