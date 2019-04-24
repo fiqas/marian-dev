@@ -267,7 +267,7 @@ public:
                      int K,
                      int dimModel) {
 
-    LOG(info, "Entering TopKGatingNetwork");
+    // LOG(info, "Entering TopKGatingNetwork");
     auto Wg = graph_->param(prefix + "_Wg", {dimModel, dimHeads}, inits::glorot_uniform);
     auto bg = graph_->param(prefix + "_bg", {1, dimHeads}, inits::zeros);
     
@@ -275,11 +275,11 @@ public:
     auto bnoise = graph_->param(prefix + "_bnoise", {1, dimHeads}, inits::zeros);
     
     auto WgMult = bdot(input, Wg) + bg;
-    LOG(info, "bdot(input, Wg) = {}", WgMult->shape());
+    // LOG(info, "bdot(input, Wg) = {}", WgMult->shape());
 
 
     auto WnoiseMult = bdot(input, Wnoise) + bnoise;
-    LOG(info, "bdot(input, Wnoise) = {}", WnoiseMult->shape());
+    // LOG(info, "bdot(input, Wnoise) = {}", WnoiseMult->shape());
 
 
     auto softplusOut = log(1 + exp(WnoiseMult));
@@ -290,26 +290,24 @@ public:
     std::normal_distribution<float> d(0, 1);
 
     auto gatingResult = sum(WgMult + d(gen) * softplusOut, -2);
-
-    LOG(info, "gatingResult = {}", gatingResult->shape());
+    // LOG(info, "gatingResult = {}", gatingResult->shape());
     
     auto gatingResultMasked = gatingResult;
     auto currentMax = max(stopGradient(gatingResult), -1);
     Expr mask;
 
     for(int i = 0; i < K - 1; i++) {
-
         mask = lt(stopGradient(gatingResultMasked), currentMax);
         auto mask2 = (1 - mask) * -99999999.f;
         gatingResultMasked = gatingResultMasked + mask2;
         currentMax = max(stopGradient(gatingResultMasked), -1);
-        LOG(info, "currentMax = {}", currentMax->shape());
+        // LOG(info, "currentMax = {}", currentMax->shape());
     }
 
     auto topKMask = ge(stopGradient(gatingResult), currentMax);
     auto gatingSoftmax = softmax(gatingResult, topKMask);
-    LOG(info, "gatingSoftmax = {}", gatingSoftmax->shape());
-    LOG(info, "Exiting TopKGatingNetwork");
+    // LOG(info, "gatingSoftmax = {}", gatingSoftmax->shape());
+    // LOG(info, "Exiting TopKGatingNetwork");
     return gatingSoftmax;
   }
 
@@ -350,10 +348,11 @@ public:
                  bool cache = false,
                  bool saveAttentionWeights = false) {
     int dimModel = q->shape()[-1];
-    int batchSize = q->shape()[-3];
-    int beamSize = q->shape()[-4];
+    // int batchSize = q->shape()[-3];
+    // int beamSize = q->shape()[-4];
    
-    auto gtScalars = SoftmaxGatingNetwork(prefix, q, dimHeads, dimModel, beamSize, batchSize); 
+    // auto gtScalars = SoftmaxGatingNetwork(prefix, q, dimHeads, dimModel, beamSize, batchSize); 
+    auto gtScalars = TopKGatingNetwork(prefix, q, dimHeads, 4, dimModel); 
     
     auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
     auto bq = graph_->param(prefix + "_bq", {       1, dimHeads * dimHeadSize}, inits::zeros);
