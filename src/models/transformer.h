@@ -505,7 +505,9 @@ public:
     // multi-head self-attention over previous input
     // // hoho LOG(info, "HOHO");
     auto EncoderOnly = (prefix.find("encoder") != std::string::npos);
-    if (type == "weighted" && EncoderOnly) {
+    auto DecoderOnly = (prefix.find("decoder") != std::string::npos) && (prefix.find("context") == std::string::npos);
+
+    if (type == "weighted-encoder" && EncoderOnly || type == "weighted-decoder" && DecoderOnly) {
       output = WeightedMultiHead(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
     }
 
