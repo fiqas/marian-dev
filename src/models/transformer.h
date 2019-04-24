@@ -507,7 +507,7 @@ public:
     auto EncoderOnly = (prefix.find("encoder") != std::string::npos);
     auto DecoderOnly = (prefix.find("decoder") != std::string::npos) && (prefix.find("context") == std::string::npos);
 
-    if ((type == "weighted-encoder" && EncoderOnly) || (type == "weighted-decoder" && DecoderOnly)) {
+    if ((type == "weighted-encoder" && EncoderOnly) || (type == "weighted-decoder" && DecoderOnly) || (type == "weighted-all")) {
       output = WeightedMultiHead(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
     }
 
