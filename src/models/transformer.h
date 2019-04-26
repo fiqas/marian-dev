@@ -512,7 +512,7 @@ public:
     }
 
     else {
-      output = MultiHead(prefix, dimModel, heads, output, keys, values, mask, cache, saveAttentionWeights);
+      output = MultiHead(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
     }
 
     auto opsPost = opt<std::string>("transformer-postprocess");
