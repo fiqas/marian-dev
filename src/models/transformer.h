@@ -348,8 +348,8 @@ public:
                  bool cache = false,
                  bool saveAttentionWeights = false) {
     int dimModel = q->shape()[-1];
-    // int batchSize = q->shape()[-3];
-    // int beamSize = q->shape()[-4];
+    int batchSize = q->shape()[-3];
+    int beamSize = q->shape()[-4];
    
     auto gtScalars = SoftmaxGatingNetwork(prefix, q, dimHeads, dimModel, beamSize, batchSize); 
     // auto gtScalars = TopKGatingNetwork(prefix, q, dimHeads, 4, dimModel); 
