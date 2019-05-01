@@ -267,7 +267,7 @@ public:
                      int K,
                      int dimModel) {
 
-    // LOG(info, "Entering TopKGatingNetwork");
+    // // hoho LOG(info, "Entering TopKGatingNetwork");
     auto Wg = graph_->param(prefix + "_Wg", {dimModel, dimHeads}, inits::glorot_uniform);
     auto bg = graph_->param(prefix + "_bg", {1, dimHeads}, inits::zeros);
     
@@ -275,11 +275,11 @@ public:
     auto bnoise = graph_->param(prefix + "_bnoise", {1, dimHeads}, inits::zeros);
     
     auto WgMult = bdot(input, Wg) + bg;
-    // LOG(info, "bdot(input, Wg) = {}", WgMult->shape());
+    // // hoho LOG(info, "bdot(input, Wg) = {}", WgMult->shape());
 
 
     auto WnoiseMult = bdot(input, Wnoise) + bnoise;
-    // LOG(info, "bdot(input, Wnoise) = {}", WnoiseMult->shape());
+    // // hoho LOG(info, "bdot(input, Wnoise) = {}", WnoiseMult->shape());
 
 
     auto softplusOut = log(1 + exp(WnoiseMult));
@@ -290,7 +290,7 @@ public:
     std::normal_distribution<float> d(0, 1);
 
     auto gatingResult = sum(WgMult + d(gen) * softplusOut, -2);
-    // LOG(info, "gatingResult = {}", gatingResult->shape());
+    // // hoho LOG(info, "gatingResult = {}", gatingResult->shape());
     
     auto gatingResultMasked = gatingResult;
     auto currentMax = max(stopGradient(gatingResult), -1);
@@ -301,13 +301,13 @@ public:
         auto mask2 = (1 - mask) * -99999999.f;
         gatingResultMasked = gatingResultMasked + mask2;
         currentMax = max(stopGradient(gatingResultMasked), -1);
-        // LOG(info, "currentMax = {}", currentMax->shape());
+        // // hoho LOG(info, "currentMax = {}", currentMax->shape());
     }
 
     auto topKMask = ge(stopGradient(gatingResult), currentMax);
     auto gatingSoftmax = softmax(gatingResult, topKMask);
-    // LOG(info, "gatingSoftmax = {}", gatingSoftmax->shape());
-    // LOG(info, "Exiting TopKGatingNetwork");
+    // // hoho LOG(info, "gatingSoftmax = {}", gatingSoftmax->shape());
+    // // hoho LOG(info, "Exiting TopKGatingNetwork");
     return gatingSoftmax;
   }
 
@@ -318,23 +318,26 @@ public:
                             int beamSize,
                             int batchSize) {
 
-    // hoho LOG(info, "input = {}", q->shape()); 
+    // hoho LOG(info, "input = {}", input->shape());
     auto Wgt = graph_->param(prefix + "_Wgt", {dimModel, dimHeads}, inits::glorot_uniform);
     // hoho LOG(info, "Wgt = {}", Wgt->shape());
     
-    auto WgtMult = bdot(input, Wgt);
-    // hoho LOG(info, "bdot(input, Wgt) = {}", WgtMult->shape());
+    auto gtOut = softmax(bdot(input, Wgt));
+    // hoho LOG(info, "softmax(bdot(input, Wgt)) = {}", gtOut->shape());
 
-    auto WgtSum = sum(WgtMult, -2);
-    // hoho LOG(info, "sum -2 = {}", WgtSum->shape());
+    // auto WgtSum = sum(WgtMult, -2); // Don't do sum, do word-level.
+    // // hoho LOG(info, "sum -2 = {}", WgtSum->shape());
     
-    auto gtOut = softmax(WgtSum);
-    // hoho LOG(info, "gtOut = {}", gtOut->shape());
+    // auto gtOut = softmax(WgtSum);
+    // // hoho LOG(info, "gtOut = {}", gtOut->shape());
 
-    auto gtScalars = reshape(gtOut, {beamSize * batchSize, dimHeads, 1, 1});
+    int maxSenLen = input->shape()[-2];
+    auto gtScalars = reshape(gtOut, {beamSize * batchSize, 1, maxSenLen, dimHeads});
     // hoho LOG(info, "gtScalars = {}", gtScalars->shape());
-    
-    return gtScalars;
+    auto gtTransposed = transpose(gtScalars, {0, 3, 2, 1});
+    // hoho LOG(info, "gtTransposed = {}", gtTransposed->shape());
+
+    return gtTransposed;
   }
   
   Expr WeightedMultiHead(std::string prefix,
@@ -511,8 +514,12 @@ public:
       output = WeightedMultiHead(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
     }
 
-    else {
+    else if (type == "base") {
       output = MultiHead(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
+    }
+
+    else {
+      output = WeightedMultiHead(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
     }
 
     auto opsPost = opt<std::string>("transformer-postprocess");
