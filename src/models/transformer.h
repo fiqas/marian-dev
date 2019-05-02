@@ -265,7 +265,9 @@ public:
                      Expr input,
                      int dimHeads,
                      int K,
-                     int dimModel) {
+                     int dimModel,
+                     int beamSize,
+                     int batchSize) {
 
     // // hoho LOG(info, "Entering TopKGatingNetwork");
     auto Wg = graph_->param(prefix + "_Wg", {dimModel, dimHeads}, inits::glorot_uniform);
@@ -289,7 +291,7 @@ public:
     // std::mt19937 gen(1811);
     std::normal_distribution<float> d(0, 1);
 
-    auto gatingResult = sum(WgMult + d(gen) * softplusOut, -2);
+    auto gatingResult = WgMult + d(gen) * softplusOut;
     // // hoho LOG(info, "gatingResult = {}", gatingResult->shape());
     
     auto gatingResultMasked = gatingResult;
@@ -306,9 +308,15 @@ public:
 
     auto topKMask = ge(stopGradient(gatingResult), currentMax);
     auto gatingSoftmax = softmax(gatingResult, topKMask);
+
+    int maxSenLen = input->shape()[-2];
+    auto gtScalars = reshape(gatingSoftmax, {beamSize * batchSize, 1, maxSenLen, dimHeads});
+    // hoho LOG(info, "gtScalars = {}", gtScalars->shape());
+    auto gtTransposed = transpose(gtScalars, {0, 3, 2, 1});
     // // hoho LOG(info, "gatingSoftmax = {}", gatingSoftmax->shape());
     // // hoho LOG(info, "Exiting TopKGatingNetwork");
-    return gatingSoftmax;
+    // return gatingSoftmax;
+    return gtTransposed;
   }
 
   Expr SoftmaxGatingNetwork(std::string prefix,
@@ -323,12 +331,6 @@ public:
     // hoho LOG(info, "Wgt = {}", Wgt->shape());
     
     auto gtOut = softmax(bdot(input, Wgt));
-    // hoho LOG(info, "softmax(bdot(input, Wgt)) = {}", gtOut->shape());
-
-    // auto WgtSum = sum(WgtMult, -2); // Don't do sum, do word-level.
-    // // hoho LOG(info, "sum -2 = {}", WgtSum->shape());
-    
-    // auto gtOut = softmax(WgtSum);
     // // hoho LOG(info, "gtOut = {}", gtOut->shape());
 
     int maxSenLen = input->shape()[-2];
@@ -354,8 +356,8 @@ public:
     int batchSize = q->shape()[-3];
     int beamSize = q->shape()[-4];
    
-    auto gtScalars = SoftmaxGatingNetwork(prefix, q, dimHeads, dimModel, beamSize, batchSize); 
-    // auto gtScalars = TopKGatingNetwork(prefix, q, dimHeads, 4, dimModel); 
+    // auto gtScalars = SoftmaxGatingNetwork(prefix, q, dimHeads, dimModel, beamSize, batchSize); 
+    auto gtScalars = TopKGatingNetwork(prefix, q, dimHeads, 4, dimModel, beamSize, batchSize); 
     
     auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
     auto bq = graph_->param(prefix + "_bq", {       1, dimHeads * dimHeadSize}, inits::zeros);
