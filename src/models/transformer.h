@@ -363,7 +363,7 @@ public:
                             int batchSize) {
 
     int maxSenLen = input->shape()[-2];
-    auto gtOut = graph_->constant({beamSize, batchSize, maxSenLen, dimHeads}, inits::ones)
+    auto gtOut = graph_->constant({beamSize, batchSize, maxSenLen, dimHeads}, inits::ones);
     auto gtScalars = reshape(gtOut, {beamSize * batchSize, 1, maxSenLen, dimHeads});
     return gtTransposed;
   }
