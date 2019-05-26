@@ -365,6 +365,7 @@ public:
     int maxSenLen = input->shape()[-2];
     auto gtOut = graph_->constant({beamSize, batchSize, maxSenLen, dimHeads}, inits::ones);
     auto gtScalars = reshape(gtOut, {beamSize * batchSize, 1, maxSenLen, dimHeads});
+    auto gtTransposed = transpose(gtScalars, {0, 3, 2, 1});
     return gtTransposed;
   }
   
