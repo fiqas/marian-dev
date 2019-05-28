@@ -319,7 +319,7 @@ public:
     std::vector<T> values(totSize);
     get(values);
 
-    int dispCols = 5;
+    // int dispCols = 5;
     if(isFloat(type_))
       strm << std::fixed << std::setprecision(8) << std::setfill(' ');
     else
@@ -330,8 +330,8 @@ public:
       shape().dims(i, dims);
 
       bool disp = true;
-      for(int j = 0; j < dims.size(); ++j)
-        disp = disp && (dims[j] < dispCols || dims[j] >= shape()[j] - dispCols);
+      // for(int j = 0; j < dims.size(); ++j)
+        // bool disp = disp && (dims[j] < dispCols || dims[j] >= shape()[j] - dispCols);
 
       if(disp) {
         if(dims.back() == 0) {
@@ -367,19 +367,19 @@ public:
           strm << std::endl;
         }
 
-        bool prev = true;
+        // bool prev = true;
         for(int j = (int)dims.size() - 1; j >= 0; --j) {
           if(j < (int)dims.size() - 1)
-            prev = prev && dims[j + 1] + 1 == shape()[j + 1];
-          if(prev && dims[j] + 1 == dispCols && shape()[j] > 2 * dispCols) {
+            // prev = prev && dims[j + 1] + 1 == shape()[j + 1]; // ROWS?
+          // if(prev && dims[j] + 1 == dispCols && shape()[j] > 2 * dispCols) {
             if(j < (int)dims.size() - 1)
               for(int k = 0; k <= j; ++k)
                 strm << " ";
-            strm << "... ";
+            // strm << "... ";
             if(j < (int)dims.size() - 1)
               strm << std::endl;
             break;
-          }
+          // }
         }
       }
     }

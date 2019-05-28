@@ -269,6 +269,7 @@ public:
                      int beamSize,
                      int batchSize) {
 
+    int maxSenLen = input->shape()[-2];
     K = 2;
      // hoho LOG(info, "Entering TopKGatingNetwork");
     auto Wg = graph_->param(prefix + "_Wg", {dimModel, dimHeads}, inits::glorot_uniform);
@@ -285,16 +286,36 @@ public:
      // hoho LOG(info, "bdot(input, Wnoise) = {}", WnoiseMult->shape());
 
 
+    // float dropProb = inference_ ? 0 : opt<float>("transformer-dropout");
+    
+    // if (!_inference) {
     auto softplusOut = log(1 + exp(WnoiseMult));
 
     std::random_device rd{};
     std::mt19937 gen{rd()};
-    // std::mt19937 gen(1811);
     std::normal_distribution<float> d(0, 1);
-
-    auto gatingResult = WgMult + d(gen) * softplusOut;
-     // hoho LOG(info, "gatingResult = {}", gatingResult->shape());
     
+    auto sampleFunc = [d, gen] (float& n) mutable { 
+      n = d(gen); 
+    }; 
+
+    
+    std::vector<float> sampleVector(beamSize * batchSize * maxSenLen * dimHeads);
+    std::for_each(sampleVector.begin(), sampleVector.end(), sampleFunc);
+    
+    // auto print = [](const float& n) { std::cout << " " << n; }; 
+    // std::cout << "d(gen) vector:";
+    // std::for_each(sampleVector.begin(), sampleVector.end(), print);
+    // std::cout << '\n';
+
+    auto sampleExpr = graph_->constant({beamSize, batchSize, maxSenLen, dimHeads}, inits::from_vector(sampleVector));
+
+    debug(sampleExpr, "sampleExpr");
+    auto gatingResult = WgMult + sampleExpr * softplusOut;
+    debug(gatingResult, "gatingResult");
+     // hoho LOG(info, "gatingResult = {}", gatingResult->shape());
+    // }
+
     auto gatingResultMasked = gatingResult;
     auto currentMax = max(stopGradient(gatingResult), -1);
     Expr mask;
@@ -318,7 +339,6 @@ public:
     // // hoho debug(gatingSoftmax, prefix + " Masked TopKGatingNetwork");
 
 
-    int maxSenLen = input->shape()[-2];
     auto gtScalars = reshape(gatingSoftmax, {beamSize * batchSize, 1, maxSenLen, dimHeads});
      // hoho LOG(info, "gtScalars = {}", gtScalars->shape());
     auto gtTransposed = transpose(gtScalars, {0, 3, 2, 1});
@@ -384,8 +404,8 @@ public:
     int beamSize = q->shape()[-4];
    
     // auto gtScalars = SoftmaxGatingNetwork(prefix, q, dimHeads, dimModel, beamSize, batchSize); 
-    auto gtScalars = Constant(prefix, q, dimHeads, dimModel, beamSize, batchSize); 
-    // auto gtScalars = TopKGatingNetwork(prefix, q, dimHeads, 4, dimModel, beamSize, batchSize); 
+    // auto gtScalars = Constant(prefix, q, dimHeads, dimModel, beamSize, batchSize); 
+    auto gtScalars = TopKGatingNetwork(prefix, q, dimHeads, 4, dimModel, beamSize, batchSize); 
     // hoho debug(gtScalars, "TopK output " + prefix);
 
     auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
