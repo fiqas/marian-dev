@@ -270,49 +270,38 @@ public:
                      int batchSize) {
 
     int maxSenLen = input->shape()[-2];
-    K = 2;
-     // hoho LOG(info, "Entering TopKGatingNetwork");
     auto Wg = graph_->param(prefix + "_Wg", {dimModel, dimHeads}, inits::glorot_uniform);
     auto bg = graph_->param(prefix + "_bg", {1, dimHeads}, inits::zeros);
     
-    auto Wnoise = graph_->param(prefix + "_Wnoise", {dimModel, dimHeads}, inits::glorot_uniform);
-    auto bnoise = graph_->param(prefix + "_bnoise", {1, dimHeads}, inits::zeros);
-    
     auto WgMult = bdot(input, Wg) + bg;
-     // hoho LOG(info, "bdot(input, Wg) = {}", WgMult->shape());
-
-
-    auto WnoiseMult = bdot(input, Wnoise) + bnoise;
-     // hoho LOG(info, "bdot(input, Wnoise) = {}", WnoiseMult->shape());
-
-
-    // float dropProb = inference_ ? 0 : opt<float>("transformer-dropout");
     
-    // if (!_inference) {
-    auto softplusOut = log(1 + exp(WnoiseMult));
+    Expr gatingResult;
 
-    std::random_device rd{};
-    std::mt19937 gen{rd()};
-    std::normal_distribution<float> d(0, 1);
-    
-    auto sampleFunc = [d, gen] (float& n) mutable { 
-      n = d(gen); 
-    }; 
+    if (!inference_) {
+      auto Wnoise = graph_->param(prefix + "_Wnoise", {dimModel, dimHeads}, inits::glorot_uniform);
+      auto bnoise = graph_->param(prefix + "_bnoise", {1, dimHeads}, inits::zeros);
+      auto WnoiseMult = bdot(input, Wnoise) + bnoise;
+      auto softplusOut = log(1 + exp(WnoiseMult));
 
-    
-    std::vector<float> sampleVector(beamSize * batchSize * maxSenLen * dimHeads);
-    std::for_each(sampleVector.begin(), sampleVector.end(), sampleFunc);
-    
-    // auto print = [](const float& n) { std::cout << " " << n; }; 
-    // std::cout << "d(gen) vector:";
-    // std::for_each(sampleVector.begin(), sampleVector.end(), print);
-    // std::cout << '\n';
+      std::random_device rd{};
+      std::mt19937 gen{rd()};
+      std::normal_distribution<float> d(0, 1);
+      
+      auto sampleFunc = [d, gen] (float& n) mutable { 
+        n = d(gen); 
+      }; 
 
-    auto sampleExpr = graph_->constant({beamSize, batchSize, maxSenLen, dimHeads}, inits::from_vector(sampleVector));
-
-    debug(sampleExpr, "sampleExpr");
-    auto gatingResult = WgMult + sampleExpr * softplusOut;
-    debug(gatingResult, "gatingResult");
+      std::vector<float> sampleVector(beamSize * batchSize * maxSenLen * dimHeads);
+      std::for_each(sampleVector.begin(), sampleVector.end(), sampleFunc);
+      
+      auto sampleExpr = graph_->constant({beamSize, batchSize, maxSenLen, dimHeads}, inits::from_vector(sampleVector));
+      // debug(sampleExpr, "sampleExpr");
+      gatingResult = WgMult + sampleExpr * softplusOut;
+    }
+    else {
+      gatingResult = WgMult;
+    }
+    // debug(gatingResult, "gatingResult");
      // hoho LOG(info, "gatingResult = {}", gatingResult->shape());
     // }
 
@@ -336,7 +325,8 @@ public:
     // // hoho debug(gatingMask, prefix + " Mask TopKGatingNetwork");
 
     // gatingSoftmax = gatingSoftmax * gatingMask;
-    // // hoho debug(gatingSoftmax, prefix + " Masked TopKGatingNetwork");
+
+    // debug(gatingSoftmax, prefix + " TopKGatingNetwork");
 
 
     auto gtScalars = reshape(gatingSoftmax, {beamSize * batchSize, 1, maxSenLen, dimHeads});
@@ -393,6 +383,7 @@ public:
                  int dimOut,
                  int dimHeads,
                  int dimHeadSize,
+                 int K,
                  Expr q,             // [-4: beam depth * batch size, -3: num heads, -2: max q length, -1: split vector dim]
                  const Expr &keys,   // [-4: beam depth, -3: batch size, -2: max kv length, -1: vector dim]
                  const Expr &values, // [-4: beam depth, -3: batch size, -2: max kv length, -1: vector dim]
@@ -405,7 +396,7 @@ public:
    
     // auto gtScalars = SoftmaxGatingNetwork(prefix, q, dimHeads, dimModel, beamSize, batchSize); 
     // auto gtScalars = Constant(prefix, q, dimHeads, dimModel, beamSize, batchSize); 
-    auto gtScalars = TopKGatingNetwork(prefix, q, dimHeads, 4, dimModel, beamSize, batchSize); 
+    auto gtScalars = TopKGatingNetwork(prefix, q, dimHeads, K, dimModel, beamSize, batchSize); 
     // hoho debug(gtScalars, "TopK output " + prefix);
 
     auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
@@ -555,7 +546,7 @@ public:
 
     auto heads = opt<int>("transformer-heads");
     auto headDim = opt<int>("transformer-head-dim");
-    // auto K = opt<int>("transformer-select-heads");
+    auto K = opt<int>("transformer-select-heads");
     auto type = opt<std::string>("transformer-attention");
 
     // multi-head self-attention over previous input
@@ -566,7 +557,7 @@ public:
       output = MultiHead(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
     }
     else if ((type == "weighted-encoder" && EncoderOnly) || (type == "weighted-decoder" && DecoderOnly) || (type == "weighted-all")) {
-      output = WeightedMultiHead(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
+      output = WeightedMultiHead(prefix, dimModel, heads, headDim, K, output, keys, values, mask, cache, saveAttentionWeights);
     }
     else {
       output = MultiHead(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
