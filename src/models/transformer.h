@@ -226,7 +226,7 @@ public:
 
   // determine the multiplicative-attention probability and performs the associative lookup as well
   // q, k, and v have already been split into multiple heads, undergone any desired linear transform.
-  Expr Attention(std::string /*prefix*/,
+  Expr Attention(std::string prefix/*prefix*/,
                  Expr q,              // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: split vector dim]
                  Expr k,              // [-4: batch size, -3: num heads, -2: max src length, -1: split vector dim]
                  Expr v,              // [-4: batch size, -3: num heads, -2: max src length, -1: split vector dim]
@@ -247,6 +247,16 @@ public:
 
     // take softmax along src sequence axis (-1)
     auto weights = softmax(z); // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
+
+    // // graph_->setInference(true);
+    // auto maxWeights = max(weights, -1);
+    // auto meanWeight = reshape(mean(maxWeights, 0), {1, 8});
+    // // debug(weights, prefix + " weights");
+    // debug(meanWeight, prefix + " meanWeight");
+    // // graph_->setInference(false);
+
+
+    // weights = weights + reshape(meanWeight, {8, 1, 1}) * 0;
 
     if(saveAttentionWeights)
       collectOneHead(weights, dimBeam);
@@ -301,7 +311,6 @@ public:
     else {
       gatingResult = WgMult;
     }
-    // debug(gatingResult, "gatingResult");
      // hoho LOG(info, "gatingResult = {}", gatingResult->shape());
     // }
 
@@ -395,8 +404,8 @@ public:
     int beamSize = q->shape()[-4];
    
     // auto gtScalars = SoftmaxGatingNetwork(prefix, q, dimHeads, dimModel, beamSize, batchSize); 
-    // auto gtScalars = Constant(prefix, q, dimHeads, dimModel, beamSize, batchSize); 
-    auto gtScalars = TopKGatingNetwork(prefix, q, dimHeads, K, dimModel, beamSize, batchSize); 
+    auto gtScalars = Constant(prefix, q, dimHeads, dimModel, beamSize, batchSize); 
+    // auto gtScalars = TopKGatingNetwork(prefix, q, dimHeads, K, dimModel, beamSize, batchSize); 
     // hoho debug(gtScalars, "TopK output " + prefix);
 
     auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
