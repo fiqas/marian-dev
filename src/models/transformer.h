@@ -243,20 +243,25 @@ public:
     auto z = bdot(q, k, false, true, scale); // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
 
     // mask out garbage beyond end of sequences
+    // debug(z, prefix + " Q * K without mask");
     z = z + mask;
+    // debug(z, prefix + " Q * K applied mask");
 
+    auto mask2 = 1 - eq(z, 0);
+
+    // debug(mask2, prefix + " mask");
     // take softmax along src sequence axis (-1)
-    auto weights = softmax(z); // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
+    auto weights = softmax(z) * mask2; // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
 
-    // // graph_->setInference(true);
-    // auto maxWeights = max(weights, -1);
-    // auto meanWeight = reshape(mean(maxWeights, 0), {1, 8});
-    // // debug(weights, prefix + " weights");
-    // debug(meanWeight, prefix + " meanWeight");
-    // // graph_->setInference(false);
+    // debug(weights, prefix + " sentence weights");
+    auto maxWeights = max(weights, -1);
+    // debug(maxWeights, prefix + " max");
+    auto meanSentence = mean(maxWeights, 0);
+    // debug(meanSentence, prefix + " meanSentence");
+    auto meanWeight = reshape(mean(meanSentence, -2), {1, 8});
+    debug(meanWeight, prefix + " meanWeight");
 
-
-    // weights = weights + reshape(meanWeight, {8, 1, 1}) * 0;
+    weights = weights + reshape(meanWeight, {8, 1, 1}) * 0;
 
     if(saveAttentionWeights)
       collectOneHead(weights, dimBeam);
@@ -305,13 +310,13 @@ public:
       std::for_each(sampleVector.begin(), sampleVector.end(), sampleFunc);
       
       auto sampleExpr = graph_->constant({beamSize, batchSize, maxSenLen, dimHeads}, inits::from_vector(sampleVector));
-      // debug(sampleExpr, "sampleExpr");
+      // // ugh debug(sampleExpr, "sampleExpr");
       gatingResult = WgMult + sampleExpr * softplusOut;
     }
     else {
       gatingResult = WgMult;
     }
-     // hoho LOG(info, "gatingResult = {}", gatingResult->shape());
+     // ugh LOG(info, "gatingResult = {}", gatingResult->shape());
     // }
 
     auto gatingResultMasked = gatingResult;
@@ -323,26 +328,26 @@ public:
         auto mask2 = (1 - mask) * -99999999.f;
         gatingResultMasked = gatingResultMasked + mask2;
         currentMax = max(stopGradient(gatingResultMasked), -1);
-         // hoho LOG(info, "currentMax = {}", currentMax->shape());
+         // ugh LOG(info, "currentMax = {}", currentMax->shape());
     }
 
     auto topKMask = ge(stopGradient(gatingResult), currentMax);
     auto gatingSoftmax = softmax(gatingResult, topKMask);
-    // hoho debug(gatingSoftmax, prefix + " TopKGatingNetwork");
+    // ugh debug(gatingSoftmax, prefix + " TopKGatingNetwork");
 
     // auto gatingMask = gt(gatingSoftmax, 0.1);
-    // // hoho debug(gatingMask, prefix + " Mask TopKGatingNetwork");
+    // // ugh debug(gatingMask, prefix + " Mask TopKGatingNetwork");
 
     // gatingSoftmax = gatingSoftmax * gatingMask;
 
-    // debug(gatingSoftmax, prefix + " TopKGatingNetwork");
+    // // ugh debug(gatingSoftmax, prefix + " TopKGatingNetwork");
 
 
     auto gtScalars = reshape(gatingSoftmax, {beamSize * batchSize, 1, maxSenLen, dimHeads});
-     // hoho LOG(info, "gtScalars = {}", gtScalars->shape());
+     // ugh LOG(info, "gtScalars = {}", gtScalars->shape());
     auto gtTransposed = transpose(gtScalars, {0, 3, 2, 1});
-     // hoho LOG(info, "gatingSoftmax = {}", gatingSoftmax->shape());
-     // hoho LOG(info, "Exiting TopKGatingNetwork");
+     // ugh LOG(info, "gatingSoftmax = {}", gatingSoftmax->shape());
+     // ugh LOG(info, "Exiting TopKGatingNetwork");
     // return gatingSoftmax;
     return gtTransposed;
   }
@@ -354,22 +359,22 @@ public:
                             int beamSize,
                             int batchSize) {
 
-     // hoho LOG(info, "input = {}", input->shape());
+     // ugh LOG(info, "input = {}", input->shape());
     auto Wgt = graph_->param(prefix + "_Wgt", {dimModel, dimHeads}, inits::glorot_uniform);
-     // hoho LOG(info, "Wgt = {}", Wgt->shape());
+     // ugh LOG(info, "Wgt = {}", Wgt->shape());
     
     auto gtOut = softmax(bdot(input, Wgt));
-    // // hoho debug(gtOut, prefix + " SoftmaxGatingNetwork");
-     // hoho LOG(info, "gtOut = {}", gtOut->shape());
+    // // ugh debug(gtOut, prefix + " SoftmaxGatingNetwork");
+     // ugh LOG(info, "gtOut = {}", gtOut->shape());
     // auto gatingMask = gt(gtOut, 0.1);
 
     // gtOut = gtOut * gatingMask;
 
     int maxSenLen = input->shape()[-2];
     auto gtScalars = reshape(gtOut, {beamSize * batchSize, 1, maxSenLen, dimHeads});
-     // hoho LOG(info, "gtScalars = {}", gtScalars->shape());
+     // ugh LOG(info, "gtScalars = {}", gtScalars->shape());
     auto gtTransposed = transpose(gtScalars, {0, 3, 2, 1});
-     // hoho LOG(info, "gtTransposed = {}", gtTransposed->shape());
+     // ugh LOG(info, "gtTransposed = {}", gtTransposed->shape());
 
     return gtTransposed;
   }
@@ -406,10 +411,12 @@ public:
     // auto gtScalars = SoftmaxGatingNetwork(prefix, q, dimHeads, dimModel, beamSize, batchSize); 
     auto gtScalars = Constant(prefix, q, dimHeads, dimModel, beamSize, batchSize); 
     // auto gtScalars = TopKGatingNetwork(prefix, q, dimHeads, K, dimModel, beamSize, batchSize); 
-    // hoho debug(gtScalars, "TopK output " + prefix);
+    // // ugh debug(gtScalars, "TopK output " + prefix);
 
     auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+    // debug(Wq, prefix + "_Wq");
     auto bq = graph_->param(prefix + "_bq", {       1, dimHeads * dimHeadSize}, inits::zeros);
+    // debug(bq, prefix + "_bq");
     auto qh = affine(q, Wq, bq);
     qh = SplitHeads(qh, dimHeads); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
 
@@ -419,7 +426,9 @@ public:
     // memoization propagation (short-term)
     if (!cache || (cache && cache_.count(prefix + "_keys") == 0)) {
       auto Wk = graph_->param(prefix + "_Wk", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+      // debug(Wk, prefix + "_Wk");
       auto bk = graph_->param(prefix + "_bk", {1,        dimHeads * dimHeadSize}, inits::zeros);
+      // debug(bk, prefix + "_bk");
 
       kh = affine(keys, Wk, bk);     // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
       kh = SplitHeads(kh, dimHeads); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
@@ -432,7 +441,9 @@ public:
     Expr vh;
     if (!cache || (cache && cache_.count(prefix + "_values") == 0)) {
       auto Wv = graph_->param(prefix + "_Wv", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+      debug(Wv, prefix + "_Wv");
       auto bv = graph_->param(prefix + "_bv", {1,        dimHeads * dimHeadSize}, inits::zeros);
+      debug(bv, prefix + "_bv");
 
       vh = affine(values, Wv, bv); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
       vh = SplitHeads(vh, dimHeads);
@@ -443,22 +454,22 @@ public:
 
     int dimBeam = q->shape()[-4];
 
-     // hoho LOG(info, "qh = {}", qh->shape());
-     // hoho LOG(info, "kh = {}", kh->shape());
-     // hoho LOG(info, "vh = {}", vh->shape());
-     // hoho LOG(info, "mask = {}", mask->shape());
+     // ugh LOG(info, "qh = {}", qh->shape());
+     // ugh LOG(info, "kh = {}", kh->shape());
+     // ugh LOG(info, "vh = {}", vh->shape());
+     // ugh LOG(info, "mask = {}", mask->shape());
     // apply multi-head attention to downscaled inputs
     auto output
         = Attention(prefix, qh, kh, vh, mask, saveAttentionWeights, dimBeam); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
 
-     // hoho debug(output, "output " + prefix);
-     // hoho LOG(info, "output = {}", output->shape());
+     // ugh debug(output, "output " + prefix);
+     // ugh LOG(info, "output = {}", output->shape());
 
     auto outputScaled = output * gtScalars;
-    // hoho debug(outputScaled, "outputScaled" + prefix);
-     // hoho LOG(info, "outputScaled = {}", outputScaled->shape());
+    // ugh debug(outputScaled, "outputScaled" + prefix);
+     // ugh LOG(info, "outputScaled = {}", outputScaled->shape());
     auto outputFinal = JoinHeads(outputScaled, dimBeam); // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
-     // hoho LOG(info, "JoinHeads(outputScaled) = {}", outputFinal->shape());
+     // ugh LOG(info, "JoinHeads(outputScaled) = {}", outputFinal->shape());
 
     int dimAtt = outputFinal->shape()[-1];
 
@@ -467,7 +478,7 @@ public:
       auto Wo
         = graph_->param(prefix + "_Wo", {dimAtt, dimOut}, inits::glorot_uniform);
       auto bo = graph_->param(prefix + "_bo", {1, dimOut}, inits::zeros);
-       // hoho LOG(info, "Wo = {}", Wo->shape());
+       // ugh LOG(info, "Wo = {}", Wo->shape());
       outputFinal = affine(outputFinal, Wo, bo);
     }
 
