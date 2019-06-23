@@ -109,7 +109,9 @@ public:
   }
 
   virtual const std::vector<Expr> getAlignments(int /*i*/ = 0) { return {}; };
-
+  
+  virtual const std::vector<Expr> getHeadWeights() { return {}; };
+  
   virtual Ptr<data::Shortlist> getShortlist() { return shortlist_; }
   virtual void setShortlist(Ptr<data::Shortlist> shortlist) {
     shortlist_ = shortlist;

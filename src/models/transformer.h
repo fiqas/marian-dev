@@ -32,6 +32,7 @@ protected:
   // If enabled, it is set once per batch during training, and once per step during translation.
   // It can be accessed by getAlignments(). @TODO: move into a state or return-value object
   std::vector<Expr> alignments_; // [max tgt len or 1][beam depth, max src length, batch size, 1]
+  std::vector<Expr> headWeights_;
 
   template <typename T> T opt(const std::string& key) const { Ptr<Options> options = options_; return options->get<T>(key); }  // need to duplicate, since somehow using Base::opt is not working
   // FIXME: that separate options assignment is weird
@@ -253,16 +254,22 @@ public:
     // take softmax along src sequence axis (-1)
     auto weights = softmax(z) * mask2; // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
 
-    // debug(weights, prefix + " sentence weights");
-    auto maxWeights = max(weights, -1);
-    // debug(maxWeights, prefix + " max");
-    auto meanSentence = mean(maxWeights, 0);
-    // debug(meanSentence, prefix + " meanSentence");
-    auto meanWeight = reshape(mean(meanSentence, -2), {1, 8});
-    debug(meanWeight, prefix + " meanWeight");
+    //debug(weights, prefix + " sentence weights");
+    // auto maxWeights = max(weights, -1);
+    // // debug(maxWeights, prefix + " max");
+    // auto meanSentence = mean(maxWeights, 0);
+    // // debug(meanSentence, prefix + " meanSentence");
+    // auto meanWeight = reshape(mean(meanSentence, -2), {1, 8});
+    // debug(meanWeight, prefix + " meanWeight");
 
-    weights = weights + reshape(meanWeight, {8, 1, 1}) * 0;
+    // weights = weights + reshape(meanWeight, {8, 1, 1}) * 0;
 
+    // auto headWeights = sum(weights * log(weights), -1);
+    // debug(headWeights, prefix + " headWeights");
+    if(!inference_) {
+    	headWeights_.push_back(weights);
+    }
+    
     if(saveAttentionWeights)
       collectOneHead(weights, dimBeam);
 
@@ -441,9 +448,9 @@ public:
     Expr vh;
     if (!cache || (cache && cache_.count(prefix + "_values") == 0)) {
       auto Wv = graph_->param(prefix + "_Wv", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
-      debug(Wv, prefix + "_Wv");
+      //debug(Wv, prefix + "_Wv");
       auto bv = graph_->param(prefix + "_bv", {1,        dimHeads * dimHeadSize}, inits::zeros);
-      debug(bv, prefix + "_bv");
+      // debug(bv, prefix + "_bv");
 
       vh = affine(values, Wv, bv); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
       vh = SplitHeads(vh, dimHeads);
@@ -746,6 +753,10 @@ public:
   EncoderTransformer(Ptr<Options> options) : Transformer(options) {}
   virtual ~EncoderTransformer() {}
 
+  virtual const std::vector<Expr> getHeadWeights() override {
+    return headWeights_;
+  }
+  
   // returns the embedding matrix based on options
   // and based on batchIndex_.
 
@@ -844,7 +855,9 @@ public:
     return New<EncoderState>(context, batchMask, batch);
   }
 
-  virtual void clear() override {}
+  virtual void clear() override {
+    headWeights_.clear();
+  }
 };
 
 class TransformerState : public DecoderState {
@@ -1094,12 +1107,17 @@ public:
   virtual const std::vector<Expr> getAlignments(int /*i*/ = 0) override {
     return alignments_;
   }
-
+  
+  virtual const std::vector<Expr> getHeadWeights() override {
+    return headWeights_;
+  }
+  
   void clear() override {
     if (output_)
       output_->clear();
     cache_.clear();
     alignments_.clear();
+    headWeights_.clear();
   }
 };
 

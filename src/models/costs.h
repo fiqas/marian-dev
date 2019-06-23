@@ -6,6 +6,7 @@
 #include "layers/weight.h"
 #include "models/encoder_decoder.h"
 #include "models/encoder_classifier.h"
+#include "layers/head_cost.h"
 
 namespace marian {
 namespace models {
@@ -55,6 +56,9 @@ public:
              Ptr<ExpressionGraph> graph,
              Ptr<data::Batch> batch,
              bool clearGraph = true) override {
+
+    float alpha = 0.4;
+
     auto encdec = std::static_pointer_cast<EncoderDecoder>(model);
     auto corpusBatch = std::static_pointer_cast<data::CorpusBatch>(batch);
 
@@ -68,7 +72,7 @@ public:
     Ptr<MultiRationalLoss> multiLoss = newMultiLoss(options_);
 
     // @TODO: adapt to multi-objective training with multiple decoders
-    auto partialLoss = loss_->apply(state->getLogProbs(),
+    auto partialLoss = loss_->apply(state->getLogProbs() * (1 - alpha),
                                     state->getTargetIndices(),
                                     state->getTargetMask(),
                                     weights);
@@ -82,6 +86,26 @@ public:
 
       auto alignmentLoss = guidedAlignmentCost(graph, corpusBatch, options_, attention);
       multiLoss->push_back(alignmentLoss);
+    }
+    
+    //debug(partialLoss.loss(), "normal loss");
+    if(!inference_) {
+      auto encoderHeadWeights = encdec->getEncoders()[0]->getHeadWeights();
+      auto decoderHeadWeights = encdec->getDecoders()[0]->getHeadWeights();
+      
+      auto encoderHeadWeightsExpr = concatenate(encoderHeadWeights, /*axis */ -1);
+      auto decoderHeadWeightsExpr = concatenate(decoderHeadWeights, /*axis =*/ -1);
+      
+      auto encoderHeadEntropyLoss = headEntropyCost(graph, corpusBatch, options_, encoderHeadWeightsExpr, alpha);
+      auto decoderHeadEntropyLoss = headEntropyCost(graph, corpusBatch, options_, decoderHeadWeightsExpr, alpha);
+      
+      multiLoss->push_back(encoderHeadEntropyLoss);
+      multiLoss->push_back(decoderHeadEntropyLoss);
+      //debug(encoderHeadEntropyLoss.loss(), "enc head entropy");
+      //debug(decoderHeadEntropyLoss.loss(), "dec head entropy");
+      //for (auto it = multiLoss->begin(); it != multiLoss->end(); ++it) {
+        //debug(it->loss(), "multi loss");
+      //}
     }
 
     return multiLoss;
