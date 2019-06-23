@@ -57,7 +57,7 @@ public:
              Ptr<data::Batch> batch,
              bool clearGraph = true) override {
 
-    float alpha = 0.4;
+    float alpha = 0.2;
 
     auto encdec = std::static_pointer_cast<EncoderDecoder>(model);
     auto corpusBatch = std::static_pointer_cast<data::CorpusBatch>(batch);
