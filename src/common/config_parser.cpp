@@ -166,10 +166,8 @@ void ConfigParser::addOptionsModel(cli::CLIWrapper& cli) {
       "Tie all embedding layers and output layer");
 
   // Transformer options
-  cli.add<bool>("--transformer-load-base",
-      "Load parameters from baseline attention to be used with finger-puppet or hydra.");
   cli.add<std::string>("--transformer-attention",
-      "Type of Transformer attention: base, finger-puppet, hydra",
+      "Type of transformer attention weighting, base = no weighting, weighting-all = enc + dec + context",
       "base");
   cli.add<int>("--transformer-heads",
       "Number of heads in multi-head attention (transformer)",
@@ -274,6 +272,8 @@ void ConfigParser::addOptionsTraining(cli::CLIWrapper& cli) {
       "Optimization criterion: ce-mean, ce-mean-words, ce-sum, perplexity", "ce-mean");
   cli.add<std::string>("--multi-loss-type",
       "How to accumulate multi-objective losses: sum, scaled, mean", "sum");
+  cli.add<bool>("--head-entropy-loss",
+      "Add entropy of weights produced by heads to multi-loss. ", false);
   cli.add<bool>("--overwrite",
       "Do not create model checkpoints, only overwrite main model file with last checkpoint. "
       "Reduces disk usage");

@@ -72,11 +72,19 @@ public:
     Ptr<MultiRationalLoss> multiLoss = newMultiLoss(options_);
 
     // @TODO: adapt to multi-objective training with multiple decoders
-    auto partialLoss = loss_->apply(state->getLogProbs() * (1 - alpha),
+    auto partialLoss = loss_->apply(state->getLogProbs(),
                                     state->getTargetIndices(),
                                     state->getTargetMask(),
                                     weights);
     multiLoss->push_back(partialLoss);
+
+    // debug(state->getLogProbs(), "Normal cost log probs");
+    // debug(state->getTargetIndices(), "Normal cost label indices");
+    // debug(partialLoss.loss(), "Normal cost loss");
+    // debug(partialLoss.count(), "Normal cost count");
+    // LOG(info, "Normal cost loss", partialLoss.loss().shape());
+    // LOG(info, "Normal cost count", partialLoss.count().shape());
+
 
     if(options_->get("guided-alignment", std::string("none")) != "none" && !inference_) {
       auto attentionVectors = encdec->getDecoders()[0]->getAlignments();
@@ -89,23 +97,27 @@ public:
     }
     
     //debug(partialLoss.loss(), "normal loss");
-    if(!inference_) {
+    if(options_->has("head-entropy-loss") && options_->get<bool>("head-entropy-loss") && !inference_) {
       auto encoderHeadWeights = encdec->getEncoders()[0]->getHeadWeights();
       auto decoderHeadWeights = encdec->getDecoders()[0]->getHeadWeights();
       
       auto encoderHeadWeightsExpr = concatenate(encoderHeadWeights, /*axis */ -1);
       auto decoderHeadWeightsExpr = concatenate(decoderHeadWeights, /*axis =*/ -1);
+      // LOG(info, "encoderExpr shape = {}", encoderHeadWeightsExpr->shape());
+      // LOG(info, "decoderExpr shape = {}", decoderHeadWeightsExpr->shape());
       
       auto encoderHeadEntropyLoss = headEntropyCost(graph, corpusBatch, options_, encoderHeadWeightsExpr, alpha);
       auto decoderHeadEntropyLoss = headEntropyCost(graph, corpusBatch, options_, decoderHeadWeightsExpr, alpha);
-      
+
+      // LOG(info, "encoderLoss shape = {}", encoderHeadEntropyLoss.loss()->shape());
+      // LOG(info, "decoderLoss shape = {}", decoderHeadEntropyLoss.loss()->shape());
       multiLoss->push_back(encoderHeadEntropyLoss);
       multiLoss->push_back(decoderHeadEntropyLoss);
-      //debug(encoderHeadEntropyLoss.loss(), "enc head entropy");
-      //debug(decoderHeadEntropyLoss.loss(), "dec head entropy");
-      //for (auto it = multiLoss->begin(); it != multiLoss->end(); ++it) {
-        //debug(it->loss(), "multi loss");
-      //}
+      // int count = 0;
+      // for (auto it = multiLoss->begin(); it != multiLoss->end(); ++it) {
+	// count++;
+        // debug(it->loss(), "multi loss " + std::to_string(count));
+      // }
     }
 
     return multiLoss;

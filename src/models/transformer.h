@@ -248,11 +248,11 @@ public:
     z = z + mask;
     // debug(z, prefix + " Q * K applied mask");
 
-    auto mask2 = 1 - eq(z, 0);
-
+    auto offMask = 1 - eq(z, 0) * -99999999.f;
+    z = z + offMask;
     // debug(mask2, prefix + " mask");
     // take softmax along src sequence axis (-1)
-    auto weights = softmax(z) * mask2; // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
+    auto weights = softmax(z); // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
 
     //debug(weights, prefix + " sentence weights");
     // auto maxWeights = max(weights, -1);
