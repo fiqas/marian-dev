@@ -272,8 +272,8 @@ void ConfigParser::addOptionsTraining(cli::CLIWrapper& cli) {
       "Optimization criterion: ce-mean, ce-mean-words, ce-sum, perplexity", "ce-mean");
   cli.add<std::string>("--multi-loss-type",
       "How to accumulate multi-objective losses: sum, scaled, mean", "sum");
-  cli.add<bool>("--head-entropy-loss",
-      "Add entropy of weights produced by heads to multi-loss. ", false);
+  cli.add<float>("--head-entropy-loss",
+      "Add entropy of weights produced by heads to multi-loss scaled by this parameter. ");
   cli.add<bool>("--overwrite",
       "Do not create model checkpoints, only overwrite main model file with last checkpoint. "
       "Reduces disk usage");

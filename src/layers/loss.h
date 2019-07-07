@@ -25,21 +25,11 @@ protected:
 
 public:
   RationalLoss(Expr loss, Expr count)
-  : loss_(loss), count_(count) {
-  
-    // debug(loss_, "loss with count Expr");
-    // debug(count_, "count with Expr");
-  
-  }
+  : loss_(loss), count_(count) { }
 
   RationalLoss(Expr loss, float count)
   : loss_(loss),
-    count_(constant_like(loss, inits::from_value(count))) {
-    
-    
-    // debug(loss_, "loss with count float");
-    // debug(count_, "count with float");
-    }
+    count_(constant_like(loss, inits::from_value(count))) { }
 
   RationalLoss(const RationalLoss& other)
   : loss_(other.loss_), count_(other.count_) {}
@@ -291,8 +281,6 @@ protected:
       lossSum   = sum(lossSum, axes_[i]);
       labelsSum = sum(labelsSum, axes_[i]);
     }
-
-    // debug(lossSum, "loss reduce Expr loss labels");
     return RationalLoss(lossSum, labelsSum);
   }
 
@@ -306,7 +294,6 @@ protected:
 
     // reduction factor tells how over how many labels we reduced in total.
     float reducedLabels = (float)loss->shape().elements() / (float)lossSum->shape().elements();
-    // debug(lossSum, "loss reduce Expr loss");
     return RationalLoss(lossSum, reducedLabels);
   }
 
@@ -318,7 +305,6 @@ public:
                              Expr mask = nullptr, Expr labelWeights = nullptr) {
     Expr loss = compute(logits, labelIndices, mask, labelWeights);
 
-    // debug(loss, "loss Labelwise");
     if(mask)
       return reduce(loss, mask); // mask can be used as element-wise label count with broadcasting
     else

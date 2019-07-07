@@ -57,8 +57,10 @@ public:
              Ptr<data::Batch> batch,
              bool clearGraph = true) override {
 
-    float alpha = 0.2;
 
+    // LOG(info, "batch src words = {}", batch->words());
+    // LOG(info, "batch trg words = {}", batch->wordsTrg());
+    
     auto encdec = std::static_pointer_cast<EncoderDecoder>(model);
     auto corpusBatch = std::static_pointer_cast<data::CorpusBatch>(batch);
 
@@ -76,15 +78,10 @@ public:
                                     state->getTargetIndices(),
                                     state->getTargetMask(),
                                     weights);
+
     multiLoss->push_back(partialLoss);
-
-    // debug(state->getLogProbs(), "Normal cost log probs");
-    // debug(state->getTargetIndices(), "Normal cost label indices");
-    // debug(partialLoss.loss(), "Normal cost loss");
-    // debug(partialLoss.count(), "Normal cost count");
-    // LOG(info, "Normal cost loss", partialLoss.loss().shape());
-    // LOG(info, "Normal cost count", partialLoss.count().shape());
-
+    // debug(multiLoss->loss(), "multi loss accumulated after cross entropy mean");
+    // debug(state->getTargetMask(), "getTargetMask");
 
     if(options_->get("guided-alignment", std::string("none")) != "none" && !inference_) {
       auto attentionVectors = encdec->getDecoders()[0]->getAlignments();
@@ -96,29 +93,26 @@ public:
       multiLoss->push_back(alignmentLoss);
     }
     
-    //debug(partialLoss.loss(), "normal loss");
-    if(options_->has("head-entropy-loss") && options_->get<bool>("head-entropy-loss") && !inference_) {
+    if(options_->get<float>("head-entropy-loss", 0.f) != 0.f && !inference_) {
+      float alpha = options_->get<float>("head-entropy-loss");	    
+      
       auto encoderHeadWeights = encdec->getEncoders()[0]->getHeadWeights();
       auto decoderHeadWeights = encdec->getDecoders()[0]->getHeadWeights();
       
-      auto encoderHeadWeightsExpr = concatenate(encoderHeadWeights, /*axis */ -1);
-      auto decoderHeadWeightsExpr = concatenate(decoderHeadWeights, /*axis =*/ -1);
-      // LOG(info, "encoderExpr shape = {}", encoderHeadWeightsExpr->shape());
-      // LOG(info, "decoderExpr shape = {}", decoderHeadWeightsExpr->shape());
-      
-      auto encoderHeadEntropyLoss = headEntropyCost(graph, corpusBatch, options_, encoderHeadWeightsExpr, alpha);
-      auto decoderHeadEntropyLoss = headEntropyCost(graph, corpusBatch, options_, decoderHeadWeightsExpr, alpha);
+      auto encoderHeadEntropyLoss = headEntropyCost(graph, corpusBatch, options_, encoderHeadWeights, "encoder", alpha);
+      auto decoderHeadEntropyLoss = headEntropyCost(graph, corpusBatch, options_, decoderHeadWeights, "decoder", alpha);
 
-      // LOG(info, "encoderLoss shape = {}", encoderHeadEntropyLoss.loss()->shape());
-      // LOG(info, "decoderLoss shape = {}", decoderHeadEntropyLoss.loss()->shape());
       multiLoss->push_back(encoderHeadEntropyLoss);
+      // debug(multiLoss->loss(), "multi loss accumulated after push_back from Encoder");
       multiLoss->push_back(decoderHeadEntropyLoss);
-      // int count = 0;
-      // for (auto it = multiLoss->begin(); it != multiLoss->end(); ++it) {
-	// count++;
-        // debug(it->loss(), "multi loss " + std::to_string(count));
-      // }
+      // debug(multiLoss->loss(), "multi loss accumulated after push_back from Decoder");
     }
+    // int count = 0;
+    // for (auto it = multiLoss->begin(); it != multiLoss->end(); ++it) {
+      // count++;
+      // debug(it->loss(), "partial loss " + std::to_string(count));
+      // debug(it->count(), "partial count " + std::to_string(count));
+     // }
 
     return multiLoss;
   }
