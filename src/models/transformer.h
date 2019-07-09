@@ -27,12 +27,15 @@ class Transformer : public EncoderOrDecoderBase {
 protected:
   using Base::options_; using Base::inference_; using Base::batchIndex_;
   std::unordered_map<std::string, Expr> cache_;
-
+  
   // attention weights produced by step()
   // If enabled, it is set once per batch during training, and once per step during translation.
   // It can be accessed by getAlignments(). @TODO: move into a state or return-value object
   std::vector<Expr> alignments_; // [max tgt len or 1][beam depth, max src length, batch size, 1]
 
+  // Load information how many heads are there in every layer of the model
+  std::unordered_map<std::string, size_t> numHeads_;
+  
   template <typename T> T opt(const std::string& key) const { Ptr<Options> options = options_; return options->get<T>(key); }  // need to duplicate, since somehow using Base::opt is not working
   // FIXME: that separate options assignment is weird
 
@@ -42,7 +45,55 @@ protected:
 
 public:
   Transformer(Ptr<Options> options)
-    : EncoderOrDecoderBase(options) {
+    : EncoderOrDecoderBase(options) { }
+  
+  void createNumHeadsYAML(const std::string& name, std::string type, size_t defaultHeads) {
+    std::string pruningYAML = name + "." + type + "_pruning.yml";
+
+    std::ofstream fout(pruningYAML);
+    YAML::Node config;
+
+    if (type == "encoder") {
+      for (size_t i = 1; i < numLayers + 1; i++) {
+        std::string selfLayer = type + "_l" + std::to_string(i) + "_self";
+        config[selfLayer] = defaultHeads;
+      }
+    }
+    else if (type == "decoder") {
+      for (size_t i = 1; i < numLayers + 1; i++) {
+        auto selfLayer = type + "_l" + std::to_string(i) + "_self";
+        auto contextLayer = type + "_l" + std::to_string(i) + "_context";
+        config[selfLayer] = defaultHeads;
+        config[contextLayer] = defaultHeads;
+      }
+    }
+    
+    fout << config;
+
+  }
+  
+  void loadNumHeads(const std::string& name, std::string type, size_t numLayers) {
+    std::string pruningYAML = name + "." + type + "_pruning.yml";
+    if(!filesystem::exists(pruningYAML)) {
+      createNumHeadsYAML(name, type, opt("transformer-heads"));
+      return;
+
+    YAML::Node config = YAML::LoadFile(pruningYAML);
+
+    if (type == "encoder") {
+      for (size_t i = 1; i < numLayers + 1; i++) {
+        std::string selfLayer = type + "_l" + std::to_string(i) + "_self";
+        numHeads_[selfLayer] = config[selfLayer].as<size_t>();
+      }
+    }
+    else if (type == "decoder") {
+      for (size_t i = 1; i < numLayers + 1; i++) {
+        auto selfLayer = type + "_l" + std::to_string(i) + "_self";
+        auto contextLayer = type + "_l" + std::to_string(i) + "_context";
+        numHeads_[selfLayer] = config[selfLayer].as<size_t>();
+        numHeads_[contextLayer] = config[contextLayer].as<size_t>();
+      }
+    }
   }
 
   static Expr transposeTimeBatch(Expr input) { return transpose(input, {0, 2, 1, 3}); }
@@ -504,7 +555,11 @@ public:
 
 class EncoderTransformer : public Transformer<EncoderBase> {
 public:
-  EncoderTransformer(Ptr<Options> options) : Transformer(options) {}
+  EncoderTransformer(Ptr<Options> options) : Transformer(options) {
+    std::string modelPath = opt("model");
+    size_t encLayers = opt("enc-depth");
+    loadNumHeads(modelPath, "encoder", encLayers);
+  }
   virtual ~EncoderTransformer() {}
 
   // returns the embedding matrix based on options
@@ -655,7 +710,11 @@ private:
   }
 
 public:
-  DecoderTransformer(Ptr<Options> options) : Transformer(options) {}
+  DecoderTransformer(Ptr<Options> options) : Transformer(options) {
+    std::string modelPath = opt("model");
+    size_t encLayers = opt("dec-depth");
+    loadNumHeads(modelPath, "decoder", decLayers);
+  }
 
   virtual Ptr<DecoderState> startState(
       Ptr<ExpressionGraph> graph,
