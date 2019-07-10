@@ -47,36 +47,36 @@ public:
   Transformer(Ptr<Options> options)
     : EncoderOrDecoderBase(options) { }
   
-  void createNumHeadsYAML(const std::string& name, std::string type, size_t defaultHeads) {
-    std::string pruningYAML = name + "." + type + "_pruning.yml";
+  // void createNumHeadsYAML(const std::string& name, std::string type, size_t numLayers, size_t defaultHeads) {
+    // std::string pruningYAML = name + "." + type + "_pruning.yml";
 
-    std::ofstream fout(pruningYAML);
-    YAML::Node config;
+    // std::ofstream fout(pruningYAML);
+    // YAML::Node config;
 
-    if (type == "encoder") {
-      for (size_t i = 1; i < numLayers + 1; i++) {
-        std::string selfLayer = type + "_l" + std::to_string(i) + "_self";
-        config[selfLayer] = defaultHeads;
-      }
-    }
-    else if (type == "decoder") {
-      for (size_t i = 1; i < numLayers + 1; i++) {
-        auto selfLayer = type + "_l" + std::to_string(i) + "_self";
-        auto contextLayer = type + "_l" + std::to_string(i) + "_context";
-        config[selfLayer] = defaultHeads;
-        config[contextLayer] = defaultHeads;
-      }
-    }
+    // if (type == "encoder") {
+      // for (size_t i = 1; i < numLayers + 1; i++) {
+        // std::string selfLayer = type + "_l" + std::to_string(i) + "_self";
+        // config[selfLayer] = defaultHeads;
+      // }
+    // }
+    // else if (type == "decoder") {
+      // for (size_t i = 1; i < numLayers + 1; i++) {
+        // auto selfLayer = type + "_l" + std::to_string(i) + "_self";
+        // auto contextLayer = type + "_l" + std::to_string(i) + "_context";
+        // config[selfLayer] = defaultHeads;
+        // config[contextLayer] = defaultHeads;
+      // }
+    // }
     
-    fout << config;
+    // fout << config;
 
-  }
+  // }
   
   void loadNumHeads(const std::string& name, std::string type, size_t numLayers) {
     std::string pruningYAML = name + "." + type + "_pruning.yml";
-    if(!filesystem::exists(pruningYAML)) {
-      createNumHeadsYAML(name, type, opt("transformer-heads"));
-      return;
+    // if(!filesystem::exists(pruningYAML)) {
+      // createNumHeadsYAML(name, type, opt("transformer-heads"));
+      // return;
 
     YAML::Node config = YAML::LoadFile(pruningYAML);
 
@@ -84,6 +84,7 @@ public:
       for (size_t i = 1; i < numLayers + 1; i++) {
         std::string selfLayer = type + "_l" + std::to_string(i) + "_self";
         numHeads_[selfLayer] = config[selfLayer].as<size_t>();
+        // LOG(info, "{} {}", selfLayer, numHeads_[selfLayer]);
       }
     }
     else if (type == "decoder") {
@@ -92,8 +93,11 @@ public:
         auto contextLayer = type + "_l" + std::to_string(i) + "_context";
         numHeads_[selfLayer] = config[selfLayer].as<size_t>();
         numHeads_[contextLayer] = config[contextLayer].as<size_t>();
+        // LOG(info, "{} {}", selfLayer, numHeads_[selfLayer]);
+        // LOG(info, "{} {}", contextLayer, numHeads_[contextLayer]);
       }
     }
+    // LOG(info, "Loaded heads from YAML {}", type);
   }
 
   static Expr transposeTimeBatch(Expr input) { return transpose(input, {0, 2, 1, 3}); }
@@ -315,6 +319,7 @@ public:
   Expr MultiHead(std::string prefix,
                  int dimOut,
                  int dimHeads,
+                 int dimHeadSize,
                  Expr q,             // [-4: beam depth * batch size, -3: num heads, -2: max q length, -1: split vector dim]
                  const Expr &keys,   // [-4: beam depth, -3: batch size, -2: max kv length, -1: vector dim]
                  const Expr &values, // [-4: beam depth, -3: batch size, -2: max kv length, -1: vector dim]
@@ -323,8 +328,10 @@ public:
                  bool saveAttentionWeights = false) {
     int dimModel = q->shape()[-1];
     // @TODO: good opportunity to implement auto-batching here or do something manually?
-    auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimModel}, inits::glorot_uniform);
-    auto bq = graph_->param(prefix + "_bq", {       1, dimModel}, inits::zeros);
+    auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+    // LOG(info, "{} Wq shape = {}", prefix, Wq->shape());
+    // debug(Wq, prefix + "_Wq");
+    auto bq = graph_->param(prefix + "_bq", {       1, dimHeads * dimHeadSize}, inits::zeros);
     auto qh = affine(q, Wq, bq);
     qh = SplitHeads(qh, dimHeads); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
 
@@ -333,8 +340,8 @@ public:
     // @TODO: set this automatically by memoizing encoder context and
     // memoization propagation (short-term)
     if (!cache || (cache && cache_.count(prefix + "_keys") == 0)) {
-      auto Wk = graph_->param(prefix + "_Wk", {dimModel, dimModel}, inits::glorot_uniform);
-      auto bk = graph_->param(prefix + "_bk", {1,        dimModel}, inits::zeros);
+      auto Wk = graph_->param(prefix + "_Wk", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+      auto bk = graph_->param(prefix + "_bk", {1,        dimHeads * dimHeadSize}, inits::zeros);
 
       kh = affine(keys, Wk, bk);     // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
       kh = SplitHeads(kh, dimHeads); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
@@ -346,8 +353,8 @@ public:
 
     Expr vh;
     if (!cache || (cache && cache_.count(prefix + "_values") == 0)) {
-      auto Wv = graph_->param(prefix + "_Wv", {dimModel, dimModel}, inits::glorot_uniform);
-      auto bv = graph_->param(prefix + "_bv", {1,        dimModel}, inits::zeros);
+      auto Wv = graph_->param(prefix + "_Wv", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+      auto bv = graph_->param(prefix + "_bv", {1,        dimHeads * dimHeadSize}, inits::zeros);
 
       vh = affine(values, Wv, bv); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
       vh = SplitHeads(vh, dimHeads);
@@ -390,10 +397,18 @@ public:
     auto opsPre = opt<std::string>("transformer-preprocess");
     auto output = preProcess(prefix + "_Wo", opsPre, input, dropProb);
 
-    auto heads = opt<int>("transformer-heads");
+    // auto heads = opt<int>("transformer-heads");
+    auto heads = numHeads_[prefix];
+    // LOG(info, "{} heads = {}", prefix, heads);
+    auto headDim = opt<int>("transformer-head-dim");
 
+    if (heads > 0) {
     // multi-head self-attention over previous input
-    output = MultiHead(prefix, dimModel, heads, output, keys, values, mask, cache, saveAttentionWeights);
+      output = MultiHead(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
+    }
+    else {
+      output = input;
+    }
 
     auto opsPost = opt<std::string>("transformer-postprocess");
     output = postProcess(prefix + "_Wo", opsPost, output, input, dropProb);
@@ -556,8 +571,8 @@ public:
 class EncoderTransformer : public Transformer<EncoderBase> {
 public:
   EncoderTransformer(Ptr<Options> options) : Transformer(options) {
-    std::string modelPath = opt("model");
-    size_t encLayers = opt("enc-depth");
+    auto modelPath = opt<std::string>("model");
+    auto encLayers = opt<int>("enc-depth");
     loadNumHeads(modelPath, "encoder", encLayers);
   }
   virtual ~EncoderTransformer() {}
@@ -711,8 +726,8 @@ private:
 
 public:
   DecoderTransformer(Ptr<Options> options) : Transformer(options) {
-    std::string modelPath = opt("model");
-    size_t encLayers = opt("dec-depth");
+    auto modelPath = opt<std::string>("model");
+    auto decLayers = opt<int>("dec-depth");
     loadNumHeads(modelPath, "decoder", decLayers);
   }
 
