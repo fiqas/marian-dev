@@ -591,6 +591,7 @@ public:
     else
       modelPath = opt<std::vector<std::string>>("models")[0];
 
+    LOG(info, "modelPath = {}", modelPath);
     auto encLayers = opt<int>("enc-depth");
     loadNumHeads(modelPath, "encoder", encLayers);
   }
@@ -750,6 +751,7 @@ public:
       modelPath = opt<std::string>("model");
     else
       modelPath = opt<std::vector<std::string>>("models")[0];
+    LOG(info, "modelPath = {}", modelPath);
     auto decLayers = opt<int>("dec-depth");
     loadNumHeads(modelPath, "decoder", decLayers);
   }
