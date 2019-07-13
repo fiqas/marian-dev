@@ -326,59 +326,75 @@ public:
                  const Expr &mask,   // [-4: batch size, -3: num heads broadcast=1, -2: max length broadcast=1, -1: max length]
                  bool cache = false,
                  bool saveAttentionWeights = false) {
-    int dimModel = q->shape()[-1];
-    // @TODO: good opportunity to implement auto-batching here or do something manually?
-    auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
-    // LOG(info, "{} Wq shape = {}", prefix, Wq->shape());
-    // debug(Wq, prefix + "_Wq");
-    auto bq = graph_->param(prefix + "_bq", {       1, dimHeads * dimHeadSize}, inits::zeros);
-    auto qh = affine(q, Wq, bq);
-    qh = SplitHeads(qh, dimHeads); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
-
-    Expr kh;
-    // Caching transformation of the encoder that should not be created again.
-    // @TODO: set this automatically by memoizing encoder context and
-    // memoization propagation (short-term)
-    if (!cache || (cache && cache_.count(prefix + "_keys") == 0)) {
-      auto Wk = graph_->param(prefix + "_Wk", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
-      auto bk = graph_->param(prefix + "_bk", {1,        dimHeads * dimHeadSize}, inits::zeros);
-
-      kh = affine(keys, Wk, bk);     // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
-      kh = SplitHeads(kh, dimHeads); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
-      cache_[prefix + "_keys"] = kh;
-    }
-    else {
-      kh = cache_[prefix + "_keys"];
-    }
-
-    Expr vh;
-    if (!cache || (cache && cache_.count(prefix + "_values") == 0)) {
-      auto Wv = graph_->param(prefix + "_Wv", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
-      auto bv = graph_->param(prefix + "_bv", {1,        dimHeads * dimHeadSize}, inits::zeros);
-
-      vh = affine(values, Wv, bv); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
-      vh = SplitHeads(vh, dimHeads);
-      cache_[prefix + "_values"] = vh;
-    } else {
-      vh = cache_[prefix + "_values"];
-    }
-
     int dimBeam = q->shape()[-4];
+    // int dimBatch = q->shape()[-3];
+    // int dimMaxSen = q->shape()[-2];
+    int dimModel = q->shape()[-1];
 
-    // apply multi-head attention to downscaled inputs
-    auto output
-        = Attention(prefix, qh, kh, vh, mask, saveAttentionWeights, dimBeam); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
+    Expr output;
 
-    output = JoinHeads(output, dimBeam); // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
+    // if (dimHeads > 0) {
+      // @TODO: good opportunity to implement auto-batching here or do something manually?
+      auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+      // LOG(info, "{} Wq shape = {}", prefix, Wq->shape());
+      // debug(Wq, prefix + "_Wq");
+      auto bq = graph_->param(prefix + "_bq", {       1, dimHeads * dimHeadSize}, inits::zeros);
+      auto qh = affine(q, Wq, bq);
+      qh = SplitHeads(qh, dimHeads); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
+
+      Expr kh;
+      // Caching transformation of the encoder that should not be created again.
+      // @TODO: set this automatically by memoizing encoder context and
+      // memoization propagation (short-term)
+      if (!cache || (cache && cache_.count(prefix + "_keys") == 0)) {
+        auto Wk = graph_->param(prefix + "_Wk", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+        auto bk = graph_->param(prefix + "_bk", {1,        dimHeads * dimHeadSize}, inits::zeros);
+
+        kh = affine(keys, Wk, bk);     // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
+        kh = SplitHeads(kh, dimHeads); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
+        cache_[prefix + "_keys"] = kh;
+      }
+      else {
+        kh = cache_[prefix + "_keys"];
+      }
+
+      Expr vh;
+      if (!cache || (cache && cache_.count(prefix + "_values") == 0)) {
+        auto Wv = graph_->param(prefix + "_Wv", {dimModel, dimHeads * dimHeadSize}, inits::glorot_uniform);
+        auto bv = graph_->param(prefix + "_bv", {1,        dimHeads * dimHeadSize}, inits::zeros);
+
+        vh = affine(values, Wv, bv); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
+        vh = SplitHeads(vh, dimHeads);
+        cache_[prefix + "_values"] = vh;
+      } else {
+        vh = cache_[prefix + "_values"];
+      }
+
+      // apply multi-head attention to downscaled inputs
+      output
+          = Attention(prefix, qh, kh, vh, mask, saveAttentionWeights, dimBeam); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
+
+      output = JoinHeads(output, dimBeam); // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
+    // }
+
+    // else {
+      // output = graph_->constant({dimBeam, dimBatch, dimMaxSen, dimModel}, inits::zeros);
+    // }
 
     int dimAtt = output->shape()[-1];
 
     bool project = !opt<bool>("transformer-no-projection");
     if(project || dimAtt != dimOut) {
-      auto Wo
+      // if (dimHeads > 0) {
+        auto Wo
         = graph_->param(prefix + "_Wo", {dimAtt, dimOut}, inits::glorot_uniform);
-      auto bo = graph_->param(prefix + "_bo", {1, dimOut}, inits::zeros);
-      output = affine(output, Wo, bo);
+        auto bo = graph_->param(prefix + "_bo", {1, dimOut}, inits::zeros);
+        output = affine(output, Wo, bo);
+      // }
+      // else {
+        // auto bo = graph_->param(prefix + "_bo", {1, dimOut}, inits::zeros);
+        // output = output + bo;
+      // }
     }
 
     return output;
@@ -402,13 +418,11 @@ public:
     // LOG(info, "{} heads = {}", prefix, heads);
     auto headDim = opt<int>("transformer-head-dim");
 
-    if (heads > 0) {
     // multi-head self-attention over previous input
+    if (heads > 0)
       output = MultiHead(prefix, dimModel, heads, headDim, output, keys, values, mask, cache, saveAttentionWeights);
-    }
-    else {
+    else
       output = input;
-    }
 
     auto opsPost = opt<std::string>("transformer-postprocess");
     output = postProcess(prefix + "_Wo", opsPost, output, input, dropProb);
@@ -571,7 +585,12 @@ public:
 class EncoderTransformer : public Transformer<EncoderBase> {
 public:
   EncoderTransformer(Ptr<Options> options) : Transformer(options) {
-    auto modelPath = opt<std::string>("model");
+    std::string modelPath;
+    if (!inference_)
+      modelPath = opt<std::string>("model");
+    else
+      modelPath = opt<std::vector<std::string>>("models")[0];
+
     auto encLayers = opt<int>("enc-depth");
     loadNumHeads(modelPath, "encoder", encLayers);
   }
@@ -726,7 +745,11 @@ private:
 
 public:
   DecoderTransformer(Ptr<Options> options) : Transformer(options) {
-    auto modelPath = opt<std::string>("model");
+    std::string modelPath;
+    if (!inference_)
+      modelPath = opt<std::string>("model");
+    else
+      modelPath = opt<std::vector<std::string>>("models")[0];
     auto decLayers = opt<int>("dec-depth");
     loadNumHeads(modelPath, "decoder", decLayers);
   }
