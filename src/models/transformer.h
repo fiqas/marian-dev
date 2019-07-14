@@ -302,6 +302,15 @@ public:
 
     // take softmax along src sequence axis (-1)
     auto weights = softmax(z); // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
+    
+    // calculate mean weight returned by a head in this batch
+    auto maxWeights = max(weights, -1);
+    auto meanSentence = mean(maxWeights, 0);
+    auto meanWeight = reshape(mean(meanSentence, -2), {1, 8});
+    
+    debug(meanWeight, prefix + " meanWeight");
+    
+    weights = weights + reshape(meanWeight, {8, 1, 1}) * 0; // hack so that Marian doesn't complain about graph
 
     if(saveAttentionWeights)
       collectOneHead(weights, dimBeam);
