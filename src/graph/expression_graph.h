@@ -270,6 +270,9 @@ public:
 
       checkNan(v->grad());
 
+
+      // PUT CODE THAT PRUNES ACTIVATIONS
+
       if(v->trainable() && v->marked_for_debug()) {
         std::cerr << "Debug Grad: " << v->debug_message() << std::endl;
         std::cerr << v->grad()->debug() << std::endl;
