@@ -281,7 +281,7 @@ public:
 
   // determine the multiplicative-attention probability and performs the associative lookup as well
   // q, k, and v have already been split into multiple heads, undergone any desired linear transform.
-  Expr Attention(std::string prefix /*prefix*/,
+  Expr Attention(std::string prefix,
                  Expr q,              // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: split vector dim]
                  Expr k,              // [-4: batch size, -3: num heads, -2: max src length, -1: split vector dim]
                  Expr v,              // [-4: batch size, -3: num heads, -2: max src length, -1: split vector dim]
@@ -289,6 +289,7 @@ public:
                  bool saveAttentionWeights = false,
                  int dimBeam = 1) {
     int dk = k->shape()[-1];
+    int dimHeads = q->shape()[-3];
 
     // softmax over batched dot product of query and keys (applied over all
     // time steps and batch entries), also add mask for illegal connections
@@ -303,15 +304,52 @@ public:
     // take softmax along src sequence axis (-1)
     auto weights = softmax(z); // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
     
-    // calculate mean weight returned by a head in this batch
-    auto maxWeights = max(weights, -1);
-    auto meanSentence = mean(maxWeights, 0);
-    auto meanWeight = reshape(mean(meanSentence, -2), {1, 8});
-    
-    debug(meanWeight, prefix + " meanWeight");
-    
-    weights = weights + reshape(meanWeight, {8, 1, 1}) * 0; // hack so that Marian doesn't complain about graph
-
+     // calculate mean weight returned by a head in this batch
+     
+      Expr binMask;
+      Expr transBinMask;
+  
+      //LOG(info, "{} weights shape = {}", prefix, weights->shape());
+  
+  //    if(prefix.find("decoder") != std::string::npos && prefix.find("self") != std::string::npos) {
+      if(prefix.find("decoder") != std::string::npos) {
+        binMask = 1 - eq(max(weights, -1), 0);
+        transBinMask = transpose(binMask, {0, 1, 3, 2});
+      }
+      else {
+        binMask = eq(mask, 0);
+        transBinMask = transpose(binMask, {0, 1, 3, 2});
+      }
+      //debug(mask, prefix + "_mask");
+      //debug(binMask, prefix + "_binary_mask");
+      //debug(transBinMask, prefix + "_trans_bin_mask");
+  
+      auto maskedWeights = weights * binMask * transBinMask;
+      auto maxWeights = max(maskedWeights, -1);
+      //LOG(info, "{} maxWeights shape = {}", prefix, maxWeights->shape());
+      //debug(maxWeights, prefix + "_max");
+      auto maskMaxWeights = 1 - eq(maxWeights, 0);
+      auto countSentence = sum(maskMaxWeights, -2);
+      auto countMask = mean(reshape(sum(countSentence, -4), {1, dimHeads}), -1);
+      auto sumSentence = sum(maxWeights, -4);
+      auto sumWeight = reshape(sum(sumSentence, -2), {1, dimHeads});
+  
+      //
+      //
+      //if(prefix.find("encoder") != std::string::npos) {
+      //  debug(z, prefix + "_z");
+      //}
+      //debug(weights, prefix + "_weights");
+  
+      //debug(maskedWeights, prefix + "_masked");
+      //debug(maxWeights, prefix + "_max");
+      //debug(maskMaxWeights, prefix + "_max_mask");
+      debug(countMask, prefix + "_count");
+      //debug(sumSentence, prefix + "_sentence");
+      debug(sumWeight, prefix + "");
+      
+      //debug(meanWeight, prefix + " meanWeight");
+ 
     if(saveAttentionWeights)
       collectOneHead(weights, dimBeam);
 
@@ -595,10 +633,10 @@ class EncoderTransformer : public Transformer<EncoderBase> {
 public:
   EncoderTransformer(Ptr<Options> options) : Transformer(options) {
     std::string modelPath;
-    if (!inference_)
-      modelPath = opt<std::string>("model");
-    else
+    if (options_->has("models"))
       modelPath = opt<std::vector<std::string>>("models")[0];
+    else
+      modelPath = opt<std::string>("model");
 
     LOG(info, "modelPath = {}", modelPath);
     auto encLayers = opt<int>("enc-depth");
@@ -756,10 +794,10 @@ private:
 public:
   DecoderTransformer(Ptr<Options> options) : Transformer(options) {
     std::string modelPath;
-    if (!inference_)
-      modelPath = opt<std::string>("model");
-    else
+    if (options_->has("models"))
       modelPath = opt<std::vector<std::string>>("models")[0];
+    else
+      modelPath = opt<std::string>("model");
     LOG(info, "modelPath = {}", modelPath);
     auto decLayers = opt<int>("dec-depth");
     loadNumHeads(modelPath, "decoder", decLayers);
