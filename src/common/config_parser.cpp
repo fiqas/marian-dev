@@ -226,6 +226,8 @@ void ConfigParser::addOptionsModel(cli::CLIWrapper& cli) {
       "Tie source and target embeddings");
   cli.add<bool>("--tied-embeddings-all",
       "Tie all embedding layers and output layer");
+  cli.add<bool>("--tied-ffn-encoder",
+      "Tie FFN layers in an encoder.");
 
   // Transformer options
   cli.add<int>("--transformer-heads",

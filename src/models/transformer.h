@@ -527,13 +527,17 @@ public:
     // apply encoder layers
     // This is the Transformer Encoder stack.
     auto encDepth = opt<int>("enc-depth");
+    auto tieFFN = opt<bool>("tied-ffn-encoder");
     for(int i = 1; i <= encDepth; ++i) {
       layer = LayerAttention(prefix_ + "_l" + std::to_string(i) + "_self",
                              layer, // query
                              layer, // keys
                              layer, // values
                              layerMask); // [batch size, num heads broadcast=1, max length broadcast=1, max length]
-      layer = LayerFFN(prefix_ + "_l" + std::to_string(i) + "_ffn", layer);
+      if (tieFFN)
+      	layer = LayerFFN(prefix_ + "_ffn", layer);
+      else
+      	layer = LayerFFN(prefix_ + "_l" + std::to_string(i) + "_ffn", layer);
       checkpoint(layer); // sets a manually specified checkpoint if gradient checkpointing is enabled, does nothing otherwise.
     }
 
