@@ -65,7 +65,13 @@ protected:
   Ptr<DataSet> data_;
   Ptr<Options> options_;
   bool restored_{false};
-  bool shuffle_;
+
+  // replacing old shuffle_ with two variants that determine more fine-grained shuffling behavior.
+  // Both set to false is equivalent to old shuffle_ == false.
+  // Now we can not shuffle the data, but shuffle batches. Useful for linear reading of very large data sets with pre-reading.
+  // Parameters like maxi-batch determine how much data is pre-read and sorted by length or other criteria.
+  bool shuffleData_{false};    // determine if full data should be shuffled before reading and batching.
+  bool shuffleBatches_{false}; // determine if batches should be shuffled after batching.
 
 private:
   Ptr<BatchStats> stats_;
@@ -96,7 +102,7 @@ private:
           a.rbegin(), a.rend(), b.rbegin(), b.rend(), itemCmp);
     };
 
-    auto cmpNone = [](const Sample& a, const Sample& b) { return &a < &b; }; // instead sort by address, so we have something to work with
+    auto cmpNone = [](const Sample& a, const Sample& b) { return a.getId() < b.getId(); }; // sort in order of original ids = original data order unless shuffling
 
     typedef std::function<bool(const Sample&, const Sample&)> cmp_type;
     typedef std::priority_queue<Sample, Samples, cmp_type> sample_queue;
@@ -130,9 +136,9 @@ private:
     while(current_ != data_->end() && maxiBatch->size() < maxSize) { // loop over data
       maxiBatch->push(*current_);
       sets = current_->size();
-        // do not consume more than required for the maxi batch as this causes
-        // that line-by-line translation is delayed by one sentence
-        bool last = maxiBatch->size() == maxSize;
+      // do not consume more than required for the maxi batch as this causes
+      // that line-by-line translation is delayed by one sentence
+      bool last = maxiBatch->size() == maxSize;
       if(!last)
         ++current_; // this actually reads the next line and pre-processes it
     }
@@ -206,7 +212,7 @@ private:
       tempBatches.push_back(data_->toBatch(batchVector));
 
     // Shuffle the batches
-    if(shuffle_) {
+    if(shuffleBatches_) {
       std::shuffle(tempBatches.begin(), tempBatches.end(), eng_);
     }
     double totalSent{}, totalLabels{};
@@ -223,7 +229,7 @@ private:
 
   // this starts fillBatches() as a background operation
   void fetchBatchesAsync() {
-    ABORT_IF(futureBufferedBatches_.valid(), "attempted to restart futureBufferedBatches_ while still running");
+    ABORT_IF(futureBufferedBatches_.valid(), "Attempted to restart futureBufferedBatches_ while still running");
     futureBufferedBatches_ = threadPool_.enqueue([this]() {
       return fetchBatches();
     });
@@ -233,7 +239,9 @@ private:
     if(bufferedBatches_.empty()) {
       // out of data: need to get next batch from background thread
       // We only get here if the future has been scheduled to run; it must be valid.
-      ABORT_IF(!futureBufferedBatches_.valid(), "attempted to wait for futureBufferedBatches_ when none pending");
+      ABORT_IF(!futureBufferedBatches_.valid(), "Attempted to wait for futureBufferedBatches_ when none pending.\n"
+          "This error often occurs when Marian tries to restore the training data iterator, but the corpus has been changed or replaced.\n"
+          "If you have changed the training corpus, add --no-restore-corpus to the training command and run it again.");
       bufferedBatches_ = std::move(futureBufferedBatches_.get());
       // if bg thread returns an empty swath, we hit the end of the epoch
       if (bufferedBatches_.empty()) {
@@ -252,7 +260,11 @@ public:
   BatchGenerator(Ptr<DataSet> data,
                  Ptr<Options> options,
                  Ptr<BatchStats> stats = nullptr)
-      : data_(data), options_(options), stats_(stats), threadPool_(1) {}
+      : data_(data), options_(options), stats_(stats), threadPool_(1) {
+    auto shuffle = options_->get<std::string>("shuffle");
+    shuffleData_ = shuffle == "data";
+    shuffleBatches_ = shuffleData_ || shuffle == "batches";
+  }
 
   ~BatchGenerator() {
     if (futureBufferedBatches_.valid()) // bg thread holds a reference to 'this',
@@ -268,15 +280,12 @@ public:
   }
 
   // @TODO: get rid of this function, begin() or constructor should figure this out
-  void prepare(bool shuffle = true) {
-    if(shuffle)
+  void prepare() {
+    if(shuffleData_)
       data_->shuffle();
     else
       data_->reset();
     newlyPrepared_ = true;
-
-    // @TODO: solve this better, maybe use options
-    shuffle_ = shuffle;
 
     // start the background pre-fetch operation
     fetchBatchesAsync();
@@ -284,7 +293,7 @@ public:
 
   // Used to restore the state of a BatchGenerator after
   // an interrupted and resumed training.
-  bool restore(Ptr<TrainingState> state, bool shuffle) {
+  bool restore(Ptr<TrainingState> state) {
     if(state->epochs == 1 && state->batchesEpoch == 0)
       return false;
 
@@ -298,7 +307,7 @@ public:
       setRNGState(state->seedBatch);
     }
 
-    prepare(shuffle);
+    prepare();
     for(size_t i = 0; i < state->batchesEpoch; ++i)
       next();
 

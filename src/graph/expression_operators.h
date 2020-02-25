@@ -6,6 +6,8 @@ namespace marian {
 
 Expr debug(Expr a, const std::string& message = "");
 
+Expr checkpoint(Expr a);
+
 typedef Expr(ActivationFunction)(Expr);
 
 Expr plus(const std::vector<Expr>&);
@@ -123,10 +125,14 @@ Expr transpose(Expr a, const std::vector<int>& axes);
 
 Expr swapAxes(Expr x, int axis1, int axis2);
 
+Expr cast(Expr a, Type type = Type::float32);
+
 Expr concatenate(const std::vector<Expr>& concats, int ax = 0);
 Expr repeat(Expr a, size_t repeats, int ax = 0);
 
 Expr reshape(Expr a, Shape shape);
+
+Expr clipGradient(Expr a, float clipValue);
 
 Expr atleast_1d(Expr a);
 Expr atleast_2d(Expr a);
@@ -135,7 +141,17 @@ Expr atleast_4d(Expr a);
 Expr atleast_nd(Expr a, size_t dims);
 
 // create a constant of shape a->shape() and initialize with init
-Expr constant_like(Expr a, const NodeInitializer& init);
+// @TODO: add a && version, to avoid a ref count. NodeInitializers are typically temps.
+// @TODO: and/or make this a template on init
+static inline Expr constant_like(Expr a, const Ptr<inits::NodeInitializer>& init) {
+  return a->graph()->constant(a->shape(), init, a->value_type());
+}
+
+// short-cut to init from std::vector, since we do this so often
+template<typename ElementType>
+Expr constant_like(Expr a, const std::vector<ElementType>& v) { return constant_like(a, inits::fromVector(std::move(v))); }
+template<typename ElementType>
+Expr constant_like(Expr a, std::vector<ElementType>&& v) { return constant_like(a, inits::fromVector(v)); }
 
 Expr flatten(Expr a);
 Expr flatten_2d(Expr a);
@@ -194,6 +210,8 @@ Expr logsoftmax(Expr a);
 
 Expr cross_entropy(Expr a, Expr b);
 
+Expr unlikelihood(Expr a, Expr b);
+
 Expr scalar_product(Expr a, Expr b, int ax = 0);
 
 Expr weighted_average(Expr in, Expr weights, int ax = 0);
@@ -207,14 +225,17 @@ Expr highway(Expr y, Expr x, Expr t);
 Expr highway(const std::string prefix, Expr x);
 
 static inline Expr dropout(Expr x, Expr mask) {
-  return x * mask;
+  if (mask)
+    return x * mask;
+  else
+    return x;
 }
 
 static inline Expr dropout(Expr x, float dropProb, Shape shape) {
   if(dropProb == 0)
     return x;
   auto graph = x->graph();
-  auto mask = graph->dropout(dropProb, shape);
+  auto mask = graph->dropoutMask(dropProb, shape);
   return dropout(x, mask);
 }
 

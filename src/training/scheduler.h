@@ -8,6 +8,9 @@
 
 namespace marian {
 
+bool getSigtermFlag();
+void installSignalHandlers();
+
 class Scheduler : public TrainingObserver {
 private:
   Ptr<Options> options_;
@@ -146,9 +149,14 @@ public:
       : options_(options), state_(state) {
     ABORT_IF(state_->factor != 1, "state.factor unexpectedly not 1 at this point??");
     updateLearningRate(*state);
+    installSignalHandlers();
   }
 
   bool keepGoing() {
+
+    if(getSigtermFlag()) // received signal SIGERM => exit gracefully
+      return false;
+
     // stop if it reached the maximum number of epochs
     size_t stopAfterEpochs = options_->get<size_t>("after-epochs");
     if(stopAfterEpochs > 0 && state_->epochs > stopAfterEpochs)
@@ -175,7 +183,13 @@ public:
   }
 
   void started() { LOG(info, "Training started"); }
-  void finished() { LOG(info, "Training finished"); }
+  void finished() {
+    if (getSigtermFlag())
+      LOG(info, "Training interrupted (SIGTERM).");
+    else
+      LOG(info, "Training finished");
+  }
+
 
   void addValidator(Ptr<ValidatorBase> validator) {
     validators_.push_back(validator);
@@ -203,9 +217,10 @@ public:
   void validate(const std::vector<Ptr<ExpressionGraph>>& graphs,
                 bool final = false) {
     // Do not validate if already validated (for instance, after the model is
-    // loaded) or if validation is scheduled for another update
-    if(state_->validated
-       || (!state_->enteredNewPeriodOf(options_->get<std::string>("valid-freq")) && !final))
+    // loaded) or if validation is scheduled for another update, or when signal SIGTERM was received
+    if(getSigtermFlag() // SIGTERM was received
+       || state_->validated // already validated (in resumed training, for example)
+       || (!state_->enteredNewPeriodOf(options_->get<std::string>("valid-freq")) && !final)) // not now
       return;
 
     bool firstValidator = true;
@@ -214,7 +229,7 @@ public:
         continue;
 
       size_t stalledPrev = validator->stalled();
-      float value = validator->validate(graphs);
+      float value = validator->validate(graphs, state_);
       if(validator->stalled() > 0) {
         LOG_VALID(info,
                   "Ep. {} : Up. {} : {} : {} : stalled {} times (last best: {})",
@@ -343,7 +358,7 @@ public:
        && heartBeatTimer_.elapsed<std::chrono::minutes>() >= 10) {
       printf("PROGRESS: %.2f%%\nEVALERR: %.7f%%\n",
           (double)state_->epochs,
-          state_->costSum / state_->costCount / (mpi ? mpi->numMPIProcesses() : 1));
+          state_->costSum / (state_->costCount ? state_->costCount : 1) / (mpi ? mpi->numMPIProcesses() : 1));
       fflush(stdout);
       std::cout << "MBSIZE: " << batchLabels << " after " << state_->batches << " updates = " << state_->labelsTotal << " labels" << std::endl << std::flush;
       heartBeatTimer_.start();
@@ -365,14 +380,21 @@ public:
       state_->wordsDisp    = 0;
     }
 
+    if(options_->get<bool>("valid-reset-stalled")) {
+      state_->stalled      = 0;
+      state_->maxStalled   = 0;
+      for(const auto& validator : validators_) {
+        state_->validators[validator->type()]["stalled"] = 0;
+      }
+    }
+
     state_->newLoad();
   }
 
   void save(const std::string& name) {
     // Save config options
-    YAML::Node yaml = options_->getYaml();
     std::ofstream fout(name + ".yml");
-    fout << yaml;
+    fout << options_->asYamlString();
     // Save training progress
     state_->save(name + ".progress.yml");
   }

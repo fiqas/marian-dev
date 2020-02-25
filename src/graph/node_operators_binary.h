@@ -63,7 +63,6 @@ public:
     // df/dB += alpha * dot(op(A).T, D)
     // beta set to 1.0 in gemm, C = alpha * dot(op(A), op(B)) + beta * C
     // to sum gradients from different graph parts
-
     if(!transA_ && transB_)
       return {NodeOp(Prod(child(0)->grad(),
                           adj_,
@@ -129,6 +128,29 @@ public:
   }
 
   const std::string type() override { return "dot"; }
+
+  virtual size_t hash() override {
+    size_t seed = NaryNodeOp::hash();
+    util::hash_combine(seed, transA_);
+    util::hash_combine(seed, transB_);
+    util::hash_combine(seed, scalar_);
+    return seed;
+  }
+
+  virtual bool equal(Expr node) override {
+    if(!NaryNodeOp::equal(node))
+      return false;
+    auto cnode = std::dynamic_pointer_cast<DotNodeOp>(node);
+    if(!cnode)
+      return false;
+    if(transA_ != cnode->transA_)
+      return false;
+    if(transB_ != cnode->transB_)
+      return false;
+    if(scalar_ != cnode->scalar_)
+      return false;
+    return true;
+  }
 
   const std::string color() override { return "orange"; }
 };
@@ -211,7 +233,6 @@ public:
                       scalar_)),
           NodeOp(Prod(
               child(2)->grad(), child(3)->val(), adj_, true, false, 0.f, 1.f))
-          // NodeOp(Add(_1, child(2)->grad(), adj_))
       };
 
     if(transA_ && !transB_)
@@ -232,7 +253,6 @@ public:
                       scalar_)),
           NodeOp(Prod(
               child(2)->grad(), child(3)->val(), adj_, true, false, 0.f, 1.f))
-          // NodeOp(Add(_1, child(2)->grad(), adj_))
       };
 
     if(transA_ && transB_)
@@ -253,7 +273,6 @@ public:
                       scalar_)),
           NodeOp(Prod(
               child(2)->grad(), child(3)->val(), adj_, true, false, 0.f, 1.f))
-          // NodeOp(Add(_1, child(2)->grad(), adj_))
       };
 
     return {
@@ -273,11 +292,34 @@ public:
                     scalar_)),
         NodeOp(Prod(
             child(2)->grad(), child(3)->val(), adj_, true, false, 0.f, 1.f))
-        // NodeOp(Add(_1, child(2)->grad(), adj_))
     };
   }
 
   const std::string type() override { return "affine"; }
+
+  virtual size_t hash() override {
+    size_t seed = NaryNodeOp::hash();
+    util::hash_combine(seed, transA_);
+    util::hash_combine(seed, transB_);
+    util::hash_combine(seed, scalar_);
+    return seed;
+  }
+
+  virtual bool equal(Expr node) override {
+    if(!NaryNodeOp::equal(node))
+      return false;
+    auto cnode = std::dynamic_pointer_cast<AffineNodeOp>(node);
+    if(!cnode)
+      return false;
+    if(transA_ != cnode->transA_)
+      return false;
+    if(transB_ != cnode->transB_)
+      return false;
+    if(scalar_ != cnode->scalar_)
+      return false;
+    return true;
+  }
+
 };
 
 class DotBatchedNodeOp : public NaryNodeOp {
@@ -406,6 +448,29 @@ public:
 
   const std::string type() override { return "bdot"; }
 
+  virtual size_t hash() override {
+    size_t seed = NaryNodeOp::hash();
+    util::hash_combine(seed, transA_);
+    util::hash_combine(seed, transB_);
+    util::hash_combine(seed, scalar_);
+    return seed;
+  }
+
+  virtual bool equal(Expr node) override {
+    if(!NaryNodeOp::equal(node))
+      return false;
+    auto cnode = std::dynamic_pointer_cast<DotBatchedNodeOp>(node);
+    if(!cnode)
+      return false;
+    if(transA_ != cnode->transA_)
+      return false;
+    if(transB_ != cnode->transB_)
+      return false;
+    if(scalar_ != cnode->scalar_)
+      return false;
+    return true;
+  }
+
   const std::string color() override { return "orange"; }
 };
 
@@ -416,8 +481,8 @@ class CSRDotNodeOp : public NaryNodeOp {
   bool swapOperands_;
 public:
   CSRDotNodeOp(const Shape& S_shape, Expr S_values, Expr S_indices, Expr S_offsets, Expr D, bool transS, bool swapOperands)
-      : NaryNodeOp({ S_values, S_indices, S_offsets, D }, newShape(S_shape, S_values, S_indices, S_offsets, D, transS, swapOperands)),
-                   transS_(transS), swapOperands_(swapOperands){
+      : NaryNodeOp({ S_values, S_indices, S_offsets, D }, newShape(S_shape, S_values, S_indices, S_offsets, D, transS, swapOperands), commonType({S_values, D})),
+                   transS_(transS), swapOperands_(swapOperands) {
     matchOrAbort<IndexType>(S_indices->value_type());
     matchOrAbort<IndexType>(S_offsets->value_type());
   }
@@ -447,17 +512,41 @@ public:
   }
 
   NodeOps backwardOps() override {
-    return {nullptr, // can't backprop into the sparse matrix (the gradient is dense)
-            nullptr,
-            nullptr,
-            NodeOp(CSRProd(child(3)->grad(), // child(3) = D
-                           graph()->allocator(),
-                           child(0)->val(), child(1)->val(), child(2)->val(), // children(0..2) = A
-                           adj_,
-                           /*transS=*/!transS_, /*swapOperands=*/swapOperands_, /*beta=*/1))};
+    return { nullptr, // can't backprop into the sparse matrix (the gradient is dense)
+             nullptr, 
+             nullptr,
+             NodeOp(CSRProd(child(3)->grad(), // child(3) = D
+                            graph()->allocator(),
+                            child(0)->val(), child(1)->val(), child(2)->val(), // children(0..2) = A
+                            adj_,
+                            /*transS=*/!transS_, /*swapOperands=*/swapOperands_, /*beta=*/1))};
   }
 
   const std::string type() override { return "csr_dot"; }
+
+  virtual size_t hash() override {
+    size_t seed = NaryNodeOp::hash();
+    for(auto s : shape())
+      util::hash_combine(seed, s);  
+    util::hash_combine(seed, transS_);
+    util::hash_combine(seed, swapOperands_);
+    return seed;
+  }
+
+  virtual bool equal(Expr node) override {
+    if(!NaryNodeOp::equal(node))
+      return false;
+    auto cnode = std::dynamic_pointer_cast<CSRDotNodeOp>(node);
+    if(!cnode)
+      return false;
+    if(transS_ != cnode->transS_)
+      return false;
+    if(shape() != cnode->shape())
+      return false;
+    if(swapOperands_ != cnode->swapOperands_)
+      return false;
+    return true;
+  }
 
   const std::string color() override { return "orange"; }
 };
@@ -513,8 +602,8 @@ struct ScalarProductNodeOp : public NaryNodeOp {
 
 struct RowsNodeOp : public NaryNodeOp {
   RowsNodeOp(Expr a, Expr indices)
-      : NaryNodeOp({a, indices}, newShape(a, indices->shape().elements())) {
-    matchOrAbort<IndexType>(indices->value_type());
+    : NaryNodeOp({a, indices}, newShape(a, indices), a->value_type()) {
+      matchOrAbort<IndexType>(indices->value_type());
   }
 
   NodeOps forwardOps() override {
@@ -526,11 +615,11 @@ struct RowsNodeOp : public NaryNodeOp {
     return {NodeOp(PasteRows(child(0)->grad(), adj_, child(1)->val()))};
   }
 
-  Shape newShape(Expr a, size_t num) {
+  Shape newShape(Expr a, Expr indices) {
     Shape shape = a->shape();
     ABORT_IF(shape.size() != 2,
              "rows operator can only be used with 2-dimensional tensors");
-    shape.set(0, num);
+    shape.set(0, (int)indices->shape().elements());
     return shape;
   }
 
@@ -573,8 +662,6 @@ struct RowsNodeOp : public NaryNodeOp {
 //  out[i][j][k] = input[i][index[i][j][k]][k]  # if dim == 1
 //  out[i][j][k] = input[i][j][index[i][j][k]]  # if dim == 2
 // 'a' and 'indices' must have the same rank.
-// @TODO: The current implementation does not support batched indices (third scenario above).
-//        I.e. all axes of 'indices' except 'axis' must have dimension 1.
 struct GatherNodeOp : public NaryNodeOp {
   GatherNodeOp(Expr a, int axis, Expr indices)
       : NaryNodeOp({a, indices}, newShape(a, axis, indices), a->value_type()),
@@ -603,10 +690,6 @@ struct GatherNodeOp : public NaryNodeOp {
       if (i != axis) {
         ABORT_IF(indices->shape()[i] != shape[i] && indices->shape()[i] != 1,
             "Dimensions must match or broadcast for input ({}) and indices ({})", std::string(shape), std::string(indices->shape()));
-#if 1 // presently, this implementation does not support batched indices
-        ABORT_IF(indices->shape()[i] != 1,
-            "Presently, gather() does not implement batched indices");
-#endif
       }
     }
     return shape;
@@ -628,7 +711,7 @@ struct GatherNodeOp : public NaryNodeOp {
   virtual bool equal(Expr node) override {
     if(!NaryNodeOp::equal(node))
       return false;
-    Ptr<GatherNodeOp> cnode = std::dynamic_pointer_cast<GatherNodeOp>(node);
+    auto cnode = std::dynamic_pointer_cast<GatherNodeOp>(node);
     if(!cnode)
       return false;
     if(axis_ != cnode->axis_)
@@ -641,7 +724,7 @@ struct GatherNodeOp : public NaryNodeOp {
 
 struct ColsNodeOp : public NaryNodeOp {
   ColsNodeOp(Expr a, Expr indices)
-    : NaryNodeOp({a, indices}, newShape(a, indices->shape().elements())) {
+    : NaryNodeOp({a, indices}, newShape(a, indices), a->value_type()) {
     matchOrAbort<IndexType>(indices->value_type());
   }
 
@@ -653,9 +736,9 @@ struct ColsNodeOp : public NaryNodeOp {
     return {NodeOp(PasteCols(child(0)->grad(), adj_, child(1)->val()))};
   }
 
-  Shape newShape(Expr a, size_t num) {
+  Shape newShape(Expr a, Expr indices) {
     Shape shape = a->shape();
-    shape.set(1, num);
+    shape.set(1, (int)indices->shape().elements());
     return shape;
   }
 
@@ -666,7 +749,8 @@ struct ColsNodeOp : public NaryNodeOp {
 
 
 struct ElementBinaryNodeOp : public NaryNodeOp {
-  ElementBinaryNodeOp(Expr a, Expr b) : NaryNodeOp({a, b}, newShape(a, b)) {}
+  ElementBinaryNodeOp(Expr a, Expr b)
+   : NaryNodeOp({a, b}, newShape(a, b)) {}
 
   Shape newShape(Expr a, Expr b) { return Shape::broadcast({a, b}); }
 
@@ -868,7 +952,9 @@ struct MinimumNodeOp : public ElementBinaryNodeOp {
 
 struct CmpNodeOp : public ElementBinaryNodeOp {
   CmpNodeOp(Expr a, Expr b, int cmp_, bool not_) : ElementBinaryNodeOp(a, b), cmp_(cmp_), not_(not_) {
-    setTrainable(false); // has no gradient
+    //setTrainable(false); // has no gradient
+    // Note: ^^ Disabled because it currently causing Marian to choke, for unknown reasons.
+    //       Not setting this will not change the result since the vector of gradient functions is empty.
   }
 
   NodeOps forwardOps() override {
@@ -890,6 +976,29 @@ struct CmpNodeOp : public ElementBinaryNodeOp {
     ABORT("Should not get here??");
   }
 
+  virtual size_t hash() override {
+    if(!hash_) {
+      size_t seed = NaryNodeOp::hash();
+      util::hash_combine(seed, cmp_);
+      util::hash_combine(seed, not_);
+      hash_ = seed;
+    }
+    return hash_;
+  }
+
+  virtual bool equal(Expr node) override {
+    if(!NaryNodeOp::equal(node))
+      return false;
+    auto cnode = std::dynamic_pointer_cast<CmpNodeOp>(node);
+    if(!cnode)
+      return false;
+    if(cmp_ != cnode->cmp_)
+      return false;
+    if(not_ != cnode->not_)
+      return false;
+    return true;
+  }
+
 private:
   int cmp_;  // -1: less; 0: equal; 1: greater
   bool not_; // invert result if true
@@ -900,7 +1009,8 @@ private:
 // that matches the label indexed by i (the picked element).
 // C = sum_{v in V}(-logsoftmax(A) * delta(v, i) = -logsoftmax(A)[i]
 struct CrossEntropyNodeOp : public NaryNodeOp {
-  CrossEntropyNodeOp(Expr a, Expr indices) : NaryNodeOp({a, indices}, newShape(a)) {
+  CrossEntropyNodeOp(Expr a, Expr indices)
+    : NaryNodeOp({a, indices}, newShape(a), a->value_type()) {
     matchOrAbort<IndexType>(indices->value_type());
     int rows   = a->shape().elements() / a->shape()[-1];
     int labels = indices->shape().elements();
@@ -931,12 +1041,21 @@ struct ConcatenateNodeOp : public NaryNodeOp {
   }
 
   Shape newShape(const std::vector<Expr>& nodes, int ax) {
-    Shape shape = nodes.back()->shape();
+    ABORT_IF(nodes.empty(), "No child nodes given");
+
+    Shape shape = nodes[0]->shape();
     ax_ = shape.axis(ax);
 
     int sum = 0;
-    for(auto child : nodes)
+    auto checkShape = shape;
+    for(auto child : nodes) {
+      checkShape.set(ax_, child->shape()[ax_]); // don't abort on different sizes on axis dim.
+      ABORT_IF(checkShape != child->shape(), 
+               "Child shapes {} and {} cannot be concatenated along axis {}", 
+               shape, child->shape(), ax);
+
       sum += child->shape()[ax_];
+    }
     shape.set(ax_, sum);
 
     return shape;
@@ -953,8 +1072,7 @@ struct ConcatenateNodeOp : public NaryNodeOp {
     std::vector<Tensor> deconcatenees;
     for(size_t i = 0; i < children_.size(); ++i) {
       auto childPtr = child(i);
-      childPtr
-          ->set_zero_adjoint();  // @TODO: this is a hotfix, do this properly
+      childPtr->set_zero_adjoint();  // @TODO: this is a hotfix, do this properly
       deconcatenees.push_back(childPtr->grad());
     }
     Deconcatenate(deconcatenees, adj_, ax_);
@@ -997,7 +1115,9 @@ public:
   }
 
   NodeOps backwardOps() override {
-    return {NodeOp(LayerNormalizationGrad(
+    return {NodeOp(
+      LayerNormalizationGrad(
+        graph()->allocator(),
         child(0)->grad(),
         child(1)->grad(),
         (children_.size() == 3) ? child(2)->grad() : nullptr,
@@ -1010,6 +1130,23 @@ public:
   }
 
   const std::string type() override { return "layer_normalization"; }
+
+  virtual size_t hash() override {
+    size_t seed = NaryNodeOp::hash();
+    util::hash_combine(seed, eps_);
+    return seed;
+  }
+
+  virtual bool equal(Expr node) override {
+    if(!NaryNodeOp::equal(node))
+      return false;
+    auto cnode = std::dynamic_pointer_cast<LayerNormalizationOp>(node);
+    if(!cnode)
+      return false;
+    if(eps_ != cnode->eps_)
+      return false;
+    return true;
+  }
 
 private:
   float eps_;

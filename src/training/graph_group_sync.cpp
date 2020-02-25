@@ -10,12 +10,13 @@ SyncGraphGroup::SyncGraphGroup(Ptr<Options> config, Ptr<IMPIWrapper> mpi)
   for(auto device : devices_) {
     auto graph = New<ExpressionGraph>();
     graph->setDevice(device);
+    graph->setCheckpointing(options_->get<bool>("gradient-checkpointing"));
     graph->reserveWorkspaceMB(options_->get<size_t>("workspace"));
     graph->getBackend()->setClip(options_->get<float>("clip-gemm"));
 
     graphs_.push_back(graph);
     shardOpt_.push_back(Optimizer(options_));
-    builders_.push_back(models::from_options(options_, models::usage::training));
+    builders_.push_back(models::createCriterionFunctionFromOptions(options_, models::usage::training));
   }
 
   // Note: We may well end up with only one MPI process or only one graph per worker.
@@ -23,11 +24,11 @@ SyncGraphGroup::SyncGraphGroup(Ptr<Options> config, Ptr<IMPIWrapper> mpi)
   // Rather, it is assumed that the communicator knows to reduce unnecessary transfers to no-ops.
   comm_ = createCommunicator(graphs_, /*noNccl=*/options_->get<bool>("no-nccl", false), /*mpi=*/mpi_);
 
-  auto type = utils::toUpper(devices_.front().typeAsString()) + "s";
+  auto formattedDeviceType = utils::utf8ToUpper(devices_.front().typeAsString()) + "s";
   if (mpi_->numMPIProcesses() > 1)
-    LOG(info, "[training] Using {} {}, distributed over {} MPI processes", mpi_->numMPIProcesses() * devices_.size(), type, mpi_->numMPIProcesses());
+    LOG(info, "[training] Using {} {}, distributed over {} MPI processes", mpi_->numMPIProcesses() * devices_.size(), formattedDeviceType, mpi_->numMPIProcesses());
   else
-    LOG(info, "[training] Using {} {}", devices_.size(), type);
+    LOG(info, "[training] Using {} {}", devices_.size(), formattedDeviceType);
 }
 
 void SyncGraphGroup::setScheduler(Ptr<Scheduler> scheduler) /*override*/ {
@@ -57,29 +58,24 @@ void SyncGraphGroup::initialize(const Ptr<data::Batch>& exampleBatch) {
     if (i > 0)
       graphs_[i]->params()->vals()->copyFrom(graphs_[0]->params()->vals());
   });
-  //ThreadPool pool(graphs_.size() - 1, graphs_.size() - 1);
-  //for(size_t i = 1; i < graphs_.size(); ++i) {
-  //  auto init = [&](size_t i) {
-  //    // initialize i-th graph and weights
-  //    builders_[i]->build(graphs_[i], exampleBatch);
-  //    graphs_[i]->forward();
-  //    // overwrite weights of i-th graph with weights from 0-th graph
-  //    graphs_[i]->params()->vals()->copyFrom(graphs_[0]->params()->vals());
-  //  };
-  //  pool.enqueue(init, i);
-  //}
-  //// ThreadPool destructor waits until completion of all tasks.
-  //// @TODO: can we use comm_->foreach()?
 }
 
 void SyncGraphGroup::initializeAvg() {
   Ptr<ExpressionGraph> graphAvg; // CPU-side temp
   std::string name = options_->get<std::string>("model");
-  if(filesystem::exists(name + ".orig.npz")) {
+  std::string suffix = name.substr(name.size() - 4);
+  ABORT_IF(suffix != ".npz" && suffix != ".bin", "Unknown model suffix {}", suffix);
+
+  if(filesystem::exists(name + ".orig" + suffix)) {
     // Load the averaged parameters into a temporary graph
     graphAvg = New<ExpressionGraph>();
     graphAvg->setDevice({0, DeviceType::cpu});
-    graphAvg->load(name, false);
+
+    // load model through builder to activate model specific loading functions.
+    // This is important if a model is overloading Model::load(...) and e.g. 
+    // mapping matrix names as in Amun.h
+    auto builder = models::createCriterionFunctionFromOptions(options_, models::usage::training);
+    builder->load(graphAvg, name, false);
     graphAvg->forward(); // initialize parameters if needed
   }
 
@@ -393,14 +389,19 @@ void SyncGraphGroup::update(std::vector<Ptr<data::Batch>> subBatches, size_t num
           paramsAvg_[idx], curParam, scheduler_->numberOfBatches(), updateTrgWords);
   };
 
-  comm_->scatterReduceAndResetGrads(); // reduce gradients across all devices (globally) into shards
-  comm_->foreach(update);              // per-shard model-update
-  comm_->allGatherParams();            // distribute param value shards back
-
   // cost across all local devices (scheduler will aggregate cross-process)
   StaticLoss localLoss;
   for(auto& l : localDeviceLosses) // localDeviceLosses is already summed up over delay steps
     localLoss += l;
+
+  // model update
+  if (std::isfinite(localLoss.loss) || mpi_->numMPIProcesses() > 1) { // guard against NaN (except with MPI, as this simple way could hang it)
+    comm_->scatterReduceAndResetGrads(); // reduce gradients across all devices and MPI nodes into shards
+    comm_->foreach(update);              // per-shard model-update
+    comm_->allGatherParams();            // distribute param value shards back
+  }
+  else
+    LOG(info, "[training] skipping {}-th update due to loss being {}", scheduler_->numberOfBatches(), localLoss.loss);
 
   if(scheduler_) {
     // track and log localLoss
@@ -436,9 +437,12 @@ void SyncGraphGroup::load() /*override*/ {
         scheduler_->load(name);
 
       std::string nameGraph = name;
-      if(mvAvg_ && filesystem::exists(name + ".orig.npz"))
+      std::string suffix = name.substr(name.size() - 4);
+      ABORT_IF(suffix != ".npz" && suffix != ".bin", "Unknown model suffix {}", suffix);
+
+      if(mvAvg_ && filesystem::exists(name + ".orig" + suffix))
         // Load the original parameters from model.npz.orig.npz
-        nameGraph += ".orig.npz";
+        nameGraph += ".orig" + suffix;
 
       size_t i = 0;
       for(auto graph : graphs_)
@@ -448,7 +452,7 @@ void SyncGraphGroup::load() /*override*/ {
       std::vector<Ptr<Backend>> backends;
       for(auto graph : graphs_)
         backends.push_back(graph->getBackend());
-      shardOpt_[0]->load(name + ".optimizer.npz", shardOpt_, backends,
+      shardOpt_[0]->load(name + ".optimizer.npz", shardOpt_, backends, // keep npz suffix for optimize checkpoint
         [&](const std::vector<float>& optimizerStateVector, const OptimizerBase::ScatterStateSetFunc& setShardFn) {
           comm_->scatterState(optimizerStateVector, setShardFn);
         });
@@ -480,13 +484,18 @@ void SyncGraphGroup::save(bool final) /*override*/ {
     swapParamsAvg();
   }
 
+  // @TODO: put all this in one place, in new branch this is already localized in one place and class, this is a quick hack which will be 
+  // done better after the next merge. Not doing this in other graph_groups as this would only make the merge harder. 
+  // Determine model suffix *.npz or *.bin, then use the same suffix for all following models saved.
   std::string name = options_->get<std::string>("model");
+  std::string suffix = name.substr(name.size() - 4);
+  ABORT_IF(suffix != ".npz" && suffix != ".bin", "Unknown model suffix {}", suffix);
 
   barrier(); // (for better grouping of log messages)
   // if smoothing then save original (unsmoothed) parameters as well
   if(mvAvg_ && paramsAvg_.size() > 0 && isMainProcess()) // only save from one MPI process
     // Save the original parameters in model.npz.orig.npz
-    builders_[0]->save(graphs_[0], name + ".orig.npz", true);
+    builders_[0]->save(graphs_[0], name + ".orig" + suffix, true);
 
   // Temporarily switch to the averaged parameters
   // Note: the smoothed model is sharded across GPUs, and across MPI processes if applicable. This brings it into MPI process[*].device[*]
@@ -500,7 +509,7 @@ void SyncGraphGroup::save(bool final) /*override*/ {
           = scheduler_ ? std::to_string(scheduler_->numberOfBatches())
                        : "unknown";
       std::string nameOverwrite = name;
-      nameOverwrite.replace(name.size() - 4, 4, ".iter" + numberOfBatches + ".npz"); // @TODO: use insert?
+      nameOverwrite.replace(name.size() - 4, 4, ".iter" + numberOfBatches + suffix); // @TODO: use insert?
       builders_[0]->save(graphs_[0], nameOverwrite);
     }
     // save main model file

@@ -9,6 +9,7 @@
 namespace marian {
 
 class EncoderS2S : public EncoderBase {
+  using EncoderBase::EncoderBase;
 public:
   Expr applyEncoderRNN(Ptr<ExpressionGraph> graph,
                        Expr embeddings,
@@ -119,52 +120,17 @@ public:
     return context;
   }
 
-  Ptr<IEmbeddingLayer> createSourceEmbedding(Ptr<ExpressionGraph> graph) {
-    // create source embeddings
-    int dimVoc = opt<std::vector<int>>("dim-vocabs")[batchIndex_];
-    int dimEmb = opt<int>("dim-emb");
-
-    auto embFactory = embedding()  //
-        ("dimVocab", dimVoc)       //
-        ("dimEmb", dimEmb);
-
-    if(opt<bool>("tied-embeddings-src") || opt<bool>("tied-embeddings-all"))
-      embFactory("prefix", "Wemb");
-    else
-      embFactory("prefix", prefix_ + "_Wemb");
-
-    if(options_->has("embedding-fix-src"))
-      embFactory("fixed", opt<bool>("embedding-fix-src"));
-
-    if(options_->hasAndNotEmpty("embedding-vectors")) {
-      auto embFiles = opt<std::vector<std::string>>("embedding-vectors");
-      embFactory                              //
-          ("embFile", embFiles[batchIndex_])  //
-          ("normalization", opt<bool>("embedding-normalization"));
-    }
-
-    return embFactory.construct(graph);
-  }
-
-  EncoderS2S(Ptr<Options> options) : EncoderBase(options) {}
+  //EncoderS2S(Ptr<Options> options) : EncoderBase(options) {}
 
   virtual Ptr<EncoderState> build(Ptr<ExpressionGraph> graph,
                                   Ptr<data::CorpusBatch> batch) override {
-    auto embedding = createSourceEmbedding(graph);
-
+    graph_ = graph;
     // select embeddings that occur in the batch
     Expr batchEmbeddings, batchMask; std::tie
-    (batchEmbeddings, batchMask) = embedding->apply((*batch)[batchIndex_]);
-
-    // apply dropout over source words
-    float dropProb = inference_ ? 0 : opt<float>("dropout-src");
-    if(dropProb) {
-      int srcWords = batchEmbeddings->shape()[-3];
-      batchEmbeddings = dropout(batchEmbeddings, dropProb, {srcWords, 1, 1});
-    }
+    (batchEmbeddings, batchMask) = getEmbeddingLayer()->apply((*batch)[batchIndex_]);
 
     Expr context = applyEncoderRNN(
-        graph, batchEmbeddings, batchMask, opt<std::string>("enc-type"));
+        graph_, batchEmbeddings, batchMask, opt<std::string>("enc-type"));
 
     return New<EncoderState>(context, batchMask, batch);
   }
@@ -173,13 +139,17 @@ public:
 };
 
 class DecoderS2S : public DecoderBase {
+  using DecoderBase::DecoderBase;
 private:
   Ptr<rnn::RNN> rnn_;
   Ptr<mlp::MLP> output_;
+  int lastDimBatch_{-1}; // monitor dimBatch to take into account batch-pruning during decoding
+                         // may require to lazily rebuild decoder RNN
 
   Ptr<rnn::RNN> constructDecoderRNN(Ptr<ExpressionGraph> graph,
                                     Ptr<DecoderState> state) {
     float dropoutRnn = inference_ ? 0 : opt<float>("dropout-rnn");
+
     auto rnn = rnn::rnn()                                          //
         ("type", opt<std::string>("dec-cell"))                     //
         ("dimInput", opt<int>("dim-emb"))                          //
@@ -238,8 +208,6 @@ private:
   }
 
 public:
-  DecoderS2S(Ptr<Options> options) : DecoderBase(options) {}
-
   virtual Ptr<DecoderState> startState(
       Ptr<ExpressionGraph> graph,
       Ptr<data::CorpusBatch> batch,
@@ -273,27 +241,31 @@ public:
       int dimBatch = (int)batch->size();
       int dimRnn = opt<int>("dim-rnn");
 
-      start = graph->constant({dimBatch, dimRnn}, inits::zeros);
+      start = graph->constant({dimBatch, dimRnn}, inits::zeros());
     }
 
     rnn::States startStates(opt<size_t>("dec-depth"), {start, start});
-    return New<DecoderState>(startStates, nullptr, encStates, batch);
+    return New<DecoderState>(startStates, Logits(), encStates, batch);
   }
 
   virtual Ptr<DecoderState> step(Ptr<ExpressionGraph> graph,
                                  Ptr<DecoderState> state) override {
 
-    auto embeddings = state->getTargetEmbeddings();
+    auto embeddings = state->getTargetHistoryEmbeddings();
 
-    // dropout target words
-    float dropoutTrg = inference_ ? 0 : opt<float>("dropout-trg");
-    if(dropoutTrg) {
-      int trgWords = embeddings->shape()[-3];
-      embeddings = dropout(embeddings, dropoutTrg, {trgWords, 1, 1});
-    }
-
-    if(!rnn_)
-      rnn_ = constructDecoderRNN(graph, state);
+    // The batch dimension of the inputs can change due to batch-pruning, in that case
+    // cached elements need to be rebuilt, in this case the mapped encoder context in the 
+    // attention mechanism of the decoder RNN.
+    int currDimBatch = embeddings->shape()[-2];
+    if(!rnn_ || lastDimBatch_ != currDimBatch)  // if currDimBatch is different, rebuild the cached RNN
+      rnn_ = constructDecoderRNN(graph, state); // @TODO: add a member to encoder/decoder state `bool batchDimChanged()`
+    lastDimBatch_ = currDimBatch;
+    // Also @TODO: maybe implement a Cached(build, updateIf) that runs a check and rebuild if required
+    // at dereferecing :
+    // rnn_ = Cached<decltype(constructDecoderRNN(graph, state))>(
+    //          /*build=*/[]{ return constructDecoderRNN(graph, state); }, 
+    //          /*updateIf=*/[]{ return state->batchDimChanged() });
+    // rnn_->transduce(...);
 
     // apply RNN to embeddings, initialized with encoder context mapped into
     // decoder space
@@ -321,10 +293,11 @@ public:
 
     if(!output_) {
       // construct deep output multi-layer network layer-wise
+
       auto hidden = mlp::dense()                                     //
           ("prefix", prefix_ + "_ff_logit_l1")                       //
           ("dim", opt<int>("dim-emb"))                               //
-          ("activation", mlp::act::tanh)                             //
+          ("activation", (int)mlp::act::tanh)                        //
           ("layer-normalization", opt<bool>("layer-normalization"))  //
           ("nematus-normalization",
            options_->has("original-type")
@@ -342,9 +315,8 @@ public:
           tiedPrefix = "Wemb";
         last.tieTransposed(tiedPrefix);
       }
-
-      if(shortlist_)
-        last.setShortlist(shortlist_);
+      last("vocab", opt<std::vector<std::string>>("vocabs")[batchIndex_]); // for factored outputs
+      last("lemma-dim-emb", opt<int>("lemma-dim-emb", 0)); // for factored outputs
 
       // assemble layers into MLP and apply to embeddings, decoder context and
       // aligned source context
@@ -354,15 +326,18 @@ public:
                     .construct(graph);
     }
 
-    Expr logits;
+    if (shortlist_)
+      output_->setShortlist(shortlist_);
+
+    Logits logits;
     if(alignedContext)
-      logits = output_->apply(embeddings, decoderContext, alignedContext);
+      logits = output_->applyAsLogits({embeddings, decoderContext, alignedContext});
     else
-      logits = output_->apply(embeddings, decoderContext);
+      logits = output_->applyAsLogits({embeddings, decoderContext});
 
     // return unormalized(!) probabilities
     auto nextState = New<DecoderState>(
-        decoderStates, logits, state->getEncoderStates(), state->getBatch());
+      decoderStates, logits, state->getEncoderStates(), state->getBatch());
 
     // Advance current target token position by one
     nextState->setPosition(state->getPosition() + 1);
@@ -378,7 +353,8 @@ public:
 
   void clear() override {
     rnn_ = nullptr;
-    output_ = nullptr;
+    if (output_)
+      output_->clear();
   }
 };
 }  // namespace marian
