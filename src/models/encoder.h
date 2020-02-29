@@ -16,6 +16,7 @@ public:
   virtual Ptr<EncoderState> build(Ptr<ExpressionGraph>, Ptr<data::CorpusBatch>) = 0;
 
   virtual void clear() = 0;
+  virtual const std::vector<Expr> getPenalties(int /*i*/ = 0) { return {}; }; // [tgt index][beam depth, max src length, batch size, 1]
 };
 
 }  // namespace marian

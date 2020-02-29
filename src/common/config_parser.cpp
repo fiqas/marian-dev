@@ -231,6 +231,12 @@ void ConfigParser::addOptionsModel(cli::CLIWrapper& cli) {
   cli.add<int>("--transformer-heads",
       "Number of heads in multi-head attention (transformer)",
       8);
+  cli.add<float>("--transformer-l0-penalty",
+      "A scalar of l0 penalty for head pruning",
+      0.0f);
+  cli.add<float>("--transformer-l2-penalty",
+      "A scalar of l2 penalty for head pruning",
+      0.0f);
   cli.add<bool>("--transformer-no-projection",
       "Omit linear projection after multi-head attention (transformer)");
   cli.add<int>("--transformer-dim-ffn",

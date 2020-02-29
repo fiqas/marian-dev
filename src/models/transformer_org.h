@@ -32,7 +32,9 @@ protected:
   // If enabled, it is set once per batch during training, and once per step during translation.
   // It can be accessed by getAlignments(). @TODO: move into a state or return-value object
   std::vector<Expr> alignments_; // [max tgt len or 1][beam depth, max src length, batch size, 1]
-  std::vector<Expr> penalties_; // [max tgt len or 1][beam depth, max src length, batch size, 1]
+  
+  // Load information how many heads are there in every layer of the model
+  std::unordered_map<std::string, size_t> numHeads_;
 
   // @TODO: make this go away
   template <typename T> 
@@ -46,10 +48,32 @@ protected:
 
   template <typename T> 
   T opt(const std::string& key, const T& def) const { opt<T>(key.c_str(), def); }
+  
+  void loadNumHeads(const std::string& name, std::string type, size_t numLayers) {
+    std::string pruningYAML = name + "." + type + "_pruning.yml";
+    // if(!filesystem::exists(pruningYAML)) {
+      // createNumHeadsYAML(name, type, opt("transformer-heads"));
+      // return;
+
+    YAML::Node config = YAML::LoadFile(pruningYAML);
+
+    if (type == "encoder") {
+      for (size_t i = 1; i < numLayers + 1; i++) {
+        std::string selfLayer = type + "_l" + std::to_string(i) + "_self";
+        numHeads_[selfLayer] = config[selfLayer].as<size_t>();
+      }
+    }
+    else if (type == "decoder") {
+      for (size_t i = 1; i < numLayers + 1; i++) {
+        auto selfLayer = type + "_l" + std::to_string(i) + "_self";
+        auto contextLayer = type + "_l" + std::to_string(i) + "_context";
+        numHeads_[selfLayer] = config[selfLayer].as<size_t>();
+        numHeads_[contextLayer] = config[contextLayer].as<size_t>();
+      }
+    }
+  }
 
 public:
-  virtual const std::vector<Expr> getPenalties(int /*i*/ = 0) override { return penalties_; };
-
   static Expr transposeTimeBatch(Expr input) { return transpose(input, {0, 2, 1, 3}); }
 
   Expr addPositionalEmbeddings(Expr input, int start = 0, bool trainPosEmbeddings = false) const {
@@ -296,22 +320,6 @@ public:
     auto output
         = Attention(prefix, qh, kh, vh, mask, saveAttentionWeights, dimBeam); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
 
-
-    // =============================================================
-    // Attention regularisation
-
-    if (opt<float>("transformer-l0-penalty") || opt<float>("transformer-l2-penalty")) {
-      auto logA = graph_->param(prefix + "_l0_gate", {1, dimHeads, 1, 1}, inits::glorotUniform());
-      auto gate = getGate(logA);
-    
-      calculatePenalty(gate, output);
-
-      output = output * gate;
-    }
-
-    // ===========================================================
-
-
     output = JoinHeads(output, dimBeam); // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
 
     int dimAtt = output->shape()[-1];
@@ -325,75 +333,6 @@ public:
     }
 
     return output;
-  }
-
-  Expr getGate(Expr logA) {
-
-    // ===================================================
-    float eps = 1e-6;
-    float temp = 0.33f;
-    float low = -0.1f;
-    float high = 1.1f;
-
-    int seed = opt<int>("seed");
-
-    Expr concrete;
-
-    if (!inference_) {
-      std::uniform_real_distribution<float> noiseDist(0.0 + eps, 1.0 - eps);
-      std::default_random_engine engine (seed);
-
-      auto noiseGen = [&noiseDist, &engine]() { return noiseDist(engine); };
-      
-      std::vector<float> noiseVec(logA->shape().elements());
-      std::cerr << "logA shape = " << logA->shape() << " size = " << logA->shape().elements() << std::endl;
-      std::generate(noiseVec.begin(), noiseVec.end(), noiseGen);
-  
-      auto noise = constant_like(logA, noiseVec);
-      concrete = sigmoid(log(noise) - log(1 - noise) + logA / temp);
-    }
-    else {
-      concrete = sigmoid(logA);
-    }
-
-    auto stretchedConcrete = concrete * (high - low) + low;
-    //CLIP HERE BELOW ZERO AND ABOVE ONE???
-    auto clippedConcrete = clip(stretchedConcrete, 1.0f);
-    
-    return clippedConcrete;
-  }
-
-  void calculatePenalty(Expr logA, Expr input = nullptr) {
-    float l0Penalty = opt<float>("transformer-l0-penalty");
-    float l2Penalty = opt<float>("transformer-l2-penalty");
-
-    // float eps = 1e-6;
-    float temp = 0.33f;
-    float low = -0.1f;
-    float high = 1.1f;
-    std::vector<int> axes = {0, 1, 2, 3};
-
-    auto pOpen = sigmoid(logA - temp * std::log(-low / high));
-    auto pOpenClipped = clip(pOpen, 1.0f);
-    
-    Expr penalty = graph_->constant({1, 1, 1, 1}, inits::zeros());
-
-    if (l0Penalty) {
-      Expr pOpenSum = pOpenClipped;
-      for (int i = 0; i < axes.size(); i++)
-        pOpenSum = sum(pOpenSum, axes[i]);
-      penalty = penalty + l0Penalty * pOpenSum;
-      // LOG(info, "penalty {} {} {}", penalty->shape(), l0Penalty, pOpenSum->shape()); 
-    }
-    if (l2Penalty) {
-      Expr inputSum = input;
-      for (int i = 0; i < axes.size(); i++)
-	inputSum = sum(inputSum, axes[i]);
-      penalty = penalty + 0.5f * l2Penalty * pOpen * inputSum;
-    }
-
-    penalties_.push_back(penalty);
-
   }
 
   Expr LayerAttention(std::string prefix,
