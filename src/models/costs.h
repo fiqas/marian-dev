@@ -75,7 +75,7 @@ public:
                                     weights);
     multiLoss->push_back(partialLoss);
 
-    debug(partialLoss.loss(), "partialLoss");
+    // debug(partialLoss.loss(), "partialLoss");
     if(options_->get("guided-alignment", std::string("none")) != "none" && !inference_) {
       auto attentionVectors = encdec->getDecoders()[0]->getAlignments(); // [tgt index][beam depth, max src length, batch size, 1]
       ABORT_IF(attentionVectors.empty(), "Model does not seem to support alignments");
@@ -92,8 +92,8 @@ public:
     auto decoderPenaltyLoss = AttentionCost(graph, batch, options_, encdec->getDecoders()[0]->getPenalties());  
     multiLoss->push_back(decoderPenaltyLoss);
 
-    debug(encoderPenaltyLoss.loss(), "encoderPenaltyLoss");
-    debug(decoderPenaltyLoss.loss(), "decoderPenaltyLoss");
+    // debug(encoderPenaltyLoss.loss(), "encoderPenaltyLoss");
+    // debug(decoderPenaltyLoss.loss(), "decoderPenaltyLoss");
     return multiLoss;
   }
 };
