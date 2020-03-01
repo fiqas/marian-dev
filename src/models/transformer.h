@@ -301,6 +301,7 @@ public:
     // Attention regularisation
 
     if (opt<float>("transformer-l0-penalty") || opt<float>("transformer-l2-penalty")) {
+      // LOG(info, "Adding gates to attention and calculating penalty...");
       auto logA = graph_->param(prefix + "_l0_gate", {1, dimHeads, 1, 1}, inits::glorotUniform());
       auto gate = getGate(logA);
     
@@ -633,7 +634,7 @@ public:
     return New<EncoderState>(context, batchMask, batch);
   }
 
-  virtual void clear() override {}
+  virtual void clear() override { penalties_.clear(); }
 };
 
 class TransformerState : public DecoderState {
@@ -908,6 +909,7 @@ public:
       output_->clear();
     cache_.clear();
     alignments_.clear();
+    penalties_.clear();
     perLayerRnn_.clear(); // this needs to be cleared between batches. 
     // @TODO: figure out how to detect stale nodes i.e. nodes that are referenced, 
     // but where underlying memory has been deallocated by dropping all tensors 

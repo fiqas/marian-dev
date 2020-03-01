@@ -19,6 +19,7 @@ static inline RationalLoss AttentionCost(Ptr<ExpressionGraph> graph,
   Expr penaltySum = graph->constant({1, 1, 1, 1}, inits::zeros());
   for (auto p : penalties) {
     penaltySum = penaltySum + p;
+    // debug(p, "penalty");
     // numLabels += p->shape().elements();
   }
 

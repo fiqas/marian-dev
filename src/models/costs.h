@@ -86,7 +86,8 @@ public:
       multiLoss->push_back(alignmentLoss);
     }
     
-    if(options_->get("transformer-l0-penalty", 0) != 0 && !inference_) {
+    if(options_->get<bool>("transformer-l0-penalty") && !inference_) {
+      // LOG(info, "Add penalty to cost function...");
       auto encoderPenaltyLoss = AttentionCost(graph, batch, options_, encdec->getEncoders()[0]->getPenalties());  
       multiLoss->push_back(encoderPenaltyLoss);
     
