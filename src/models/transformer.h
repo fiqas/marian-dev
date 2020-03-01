@@ -346,7 +346,7 @@ public:
       auto noiseGen = [&noiseDist, &engine]() { return noiseDist(engine); };
       
       std::vector<float> noiseVec(logA->shape().elements());
-      std::cerr << "logA shape = " << logA->shape() << " size = " << logA->shape().elements() << std::endl;
+      // std::cerr << "logA shape = " << logA->shape() << " size = " << logA->shape().elements() << std::endl;
       std::generate(noiseVec.begin(), noiseVec.end(), noiseGen);
   
       auto noise = constant_like(logA, noiseVec);
