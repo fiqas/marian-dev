@@ -86,11 +86,13 @@ public:
       multiLoss->push_back(alignmentLoss);
     }
     
-    auto encoderPenaltyLoss = AttentionCost(graph, batch, options_, encdec->getEncoders()[0]->getPenalties());  
-    multiLoss->push_back(encoderPenaltyLoss);
+    if(options_->get("transformer-l0-penalty") != 0 && !inference_) {
+      auto encoderPenaltyLoss = AttentionCost(graph, batch, options_, encdec->getEncoders()[0]->getPenalties());  
+      multiLoss->push_back(encoderPenaltyLoss);
     
-    auto decoderPenaltyLoss = AttentionCost(graph, batch, options_, encdec->getDecoders()[0]->getPenalties());  
-    multiLoss->push_back(decoderPenaltyLoss);
+      auto decoderPenaltyLoss = AttentionCost(graph, batch, options_, encdec->getDecoders()[0]->getPenalties());  
+      multiLoss->push_back(decoderPenaltyLoss);
+    }
 
     // debug(encoderPenaltyLoss.loss(), "encoderPenaltyLoss");
     // debug(decoderPenaltyLoss.loss(), "decoderPenaltyLoss");
