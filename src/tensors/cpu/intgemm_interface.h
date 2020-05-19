@@ -104,7 +104,8 @@ public:
       : UnaryNodeOp(input, newShape(input, indices), intgemm_<vtype>::intgemmType), clipValue_(clipValue), indices_(indices) {
 
     set_name(input->name());
-    //setMemoize(false); //This *should* prevent it from going into the long term memory and remain in the shorterm. In practise, it crashes.
+    setMemoize(false); // Enabling memoization leads to a massive memory leak. Instead use special "midterm" memory.
+                       // Still, I don't understand why setMemoize(true) still leaks.
     // Check if arguments are not null
     ABORT_IF(child(0) == nullptr, "B cannot be null");
 
@@ -205,6 +206,20 @@ struct QuantMultNodeOp : public UnaryNodeOp {
     else
       return "intgemmQuantMultB";
   }
+
+  /* @TODO This is not correct in the case of none-static alphas but we are leaving it for now to battle memory leaks. */
+  bool equal(Expr node) override {
+    if (isA_) {
+      return UnaryNodeOp::equal(node);
+    }
+    if(hash() == node->hash()) return true;
+    return false;
+  }
+
+  size_t hash() override {
+    return std::hash<std::string>{}(name());
+  }
+
 };
 
 class PrepareBiasForBNodeOp : public NaryNodeOp {
@@ -427,6 +442,15 @@ public:
         ABORT("We did not find an alpha in the model named: {}.", name());
       }
     )};
+  }
+
+  bool equal(Expr node) override {
+    if(hash() == node->hash()) return true;
+    return false;
+  }
+
+  size_t hash() override {
+    return std::hash<std::string>{}(name());
   }
 
   const std::string type() override { return "alphaNodeOp"; }
