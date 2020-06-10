@@ -451,6 +451,7 @@ namespace marian {
     int dimEmb = opt<int>("dimEmb");
 
     bool fixed = opt<bool>("fixed", false);
+    bool blockSparse = opt<bool>("block-sparse", false);
 
     factoredVocab_ = FactoredVocab::tryCreateAndLoad(options_->get<std::string>("vocab", ""));
     if (factoredVocab_) {
@@ -470,6 +471,10 @@ namespace marian {
     }
 
     E_ = graph_->param(name, {dimVoc, dimEmb}, initFunc, fixed);
+    if (blockSparse) {
+      mask_ = 1 - eq(E_, 0);
+      E_ = E_ * mask_;
+    }
   }
 
   // helper to embed a sequence of words (given as indices) via factored embeddings
@@ -564,6 +569,7 @@ namespace marian {
         "dimVocab", opt<std::vector<int>>("dim-vocabs")[batchIndex_],
         "dimEmb",   opt<int>("dim-emb"),
         "dropout",  dropout_,
+        "block-sparse", opt<bool>("block-sparse-emb"),
         "prefix",   (opt<bool>("tied-embeddings-src") || opt<bool>("tied-embeddings-all")) ? "Wemb" : prefix_ + "_Wemb",
         "fixed",    embeddingFix_,
         "vocab",    opt<std::vector<std::string>>("vocabs")[batchIndex_]); // for factored embeddings

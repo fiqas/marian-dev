@@ -288,6 +288,7 @@ public:
 // EncoderDecoderLayerBase, which knows to pass on all required parameters from options.
 class Embedding : public LayerBase, public IEmbeddingLayer {
   Expr E_;
+  Expr mask_;
   Ptr<FactoredVocab> factoredVocab_;
   Expr multiRows(const Words& data, float dropProb) const;
 public:
@@ -427,7 +428,11 @@ Expr denseInline(Expr x, std::string prefix, std::string suffix, int outDim, con
   auto W = graph->param(prefix + "_W" + suffix, { x->shape()[-1], outDim }, inits::glorotUniform());
   auto b = graph->param(prefix + "_b" + suffix, { 1,              outDim }, inits::zeros());
 
-  x = affine(x, W, b);
+  // BLOCK-SPARSE MASK
+  auto W_mask = 1 - eq(W, 0);
+  auto W_masked = W * W_mask;
+
+  x = affine(x, W_masked, b);
   if (actFn)
     x = actFn(x);
   x = dropout(x, dropProb);

@@ -594,6 +594,7 @@ public:
     Expr batchEmbeddings, batchMask;
 
     auto embeddingLayer = getEmbeddingLayer(opt<bool>("ulr", false));
+
     std::tie(batchEmbeddings, batchMask) = embeddingLayer->apply((*batch)[batchIndex_]);
     batchEmbeddings = addSpecialEmbeddings(batchEmbeddings, /*start=*/0, batch);
     
