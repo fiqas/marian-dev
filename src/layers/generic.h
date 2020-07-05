@@ -439,6 +439,47 @@ Expr denseInline(Expr x, std::string prefix, std::string suffix, int outDim, con
   return x;
 }
 
+// like affine() but with built-in parameters, activation, and dropout
+static inline
+std::tuple<Expr, Expr> denseInlineRegularised(Expr x, std::string prefix, std::string suffix, int outDim, int block, const std::function<Expr(Expr)>& actFn = nullptr, float dropProb = 0.0f)
+{
+  auto graph = x->graph();
+
+  auto W = graph->param(prefix + "_W" + suffix, { x->shape()[-1], outDim }, inits::glorotUniform());
+  auto b = graph->param(prefix + "_b" + suffix, { 1,              outDim }, inits::zeros());
+
+  int h = W->shape()[0];
+  int innerShape = W->shape()[0] * W->shape()[1] / (block * h);
+  int blockNum = W->shape()[0] * W->shape()[1] / (block * block);
+  auto W_reshaped = reshape(W, {h / block, block, innerShape, block}); 
+  auto W_transposed = transpose(W_reshaped, {0, 2, 1, 3});
+  auto W_blocks = reshape(W_transposed, {1, blockNum, block, block});
+
+
+  // Calculate L2-regularisation
+ 
+  // Expr cost; 
+  auto W_pow = W_blocks * W_blocks;
+  auto W_sum = sum(sum(W_pow, -2), -1);
+  auto W_sqrt = sqrt(W_sum);
+  auto W_cost = sum(W_sqrt, -3);
+  // debug(W_cost);
+
+  // auto layer_cost = sqrt(sum(W_sum, -3));
+  auto ugh = W_cost / W_cost;
+  
+
+  // auto total_cost = W_cost + layer_cost;
+
+  x = affine(x, W * ugh, b);
+  if (actFn)
+    x = actFn(x);
+  x = dropout(x, dropProb);
+
+  // cost = W_cost;
+  return std::make_tuple(x, total_cost);
+}
+
 static inline
 Expr layerNorm(Expr x, std::string prefix, std::string suffix = std::string()) {
   int dimModel = x->shape()[-1];

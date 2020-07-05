@@ -2,6 +2,7 @@
 
 #include "layers/generic.h"
 #include "layers/guided_alignment.h"
+#include "layers/regulariser.h"
 #include "layers/loss.h"
 #include "layers/weight.h"
 #include "models/encoder_decoder.h"
@@ -86,6 +87,18 @@ public:
       auto alignmentLoss = guidedAlignmentCost(graph, corpusBatch, options_, attention);
       multiLoss->push_back(alignmentLoss);
     }
+
+    // LOG(info, "COST {}", options_->get<float>("group-lasso-regulariser", 0.0f));
+    if(options_->get<float>("group-lasso-regulariser", 0.0f) != 0 && !inference_) {
+      // LOG(info, "INSIDE GROUP LASSO COST");
+      auto encRegularisers = encdec->getEncoders()[0]->getRegularisers();
+      auto decRegularisers = encdec->getDecoders()[0]->getRegularisers();
+      
+      auto regulariserLoss = regulariserCost(graph, corpusBatch, options_, encRegularisers, decRegularisers);
+      multiLoss->push_back(regulariserLoss);
+    }
+
+    // LOG(info, "multiLoss size {}", multiLoss->size());
 
     return multiLoss;
   }

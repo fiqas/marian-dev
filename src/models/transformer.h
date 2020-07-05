@@ -32,6 +32,8 @@ protected:
   // If enabled, it is set once per batch during training, and once per step during translation.
   // It can be accessed by getAlignments(). @TODO: move into a state or return-value object
   std::vector<Expr> alignments_; // [max tgt len or 1][beam depth, max src length, batch size, 1]
+  std::vector<Expr> regularisers_;
+  Expr regulariser_;
   
   // Load information how many heads are there in every layer of the model
   std::unordered_map<std::string, size_t> numHeads_;
@@ -291,8 +293,8 @@ public:
       auto sumSentence = sum(maxWeights, -4);
       auto sumWeight = reshape(sum(sumSentence, -2), {1, dimHeads});
       
-      debug(countMask, prefix + "_count");
-      debug(sumWeight, prefix + "");
+      //debug(countMask, prefix + "_count");
+      //debug(sumWeight, prefix + "");
     }
 
     if(saveAttentionWeights)
@@ -435,9 +437,8 @@ public:
     ABORT("Invalid activation name '{}'", actName);
   }
 
-  Expr LayerFFN(std::string prefix, Expr input) const {
+  Expr LayerFFN(std::string prefix, Expr input) {
     int dimModel = input->shape()[-1];
-
     float dropProb = inference_ ? 0 : opt<float>("transformer-dropout");
     auto opsPre = opt<std::string>("transformer-preprocess");
     auto output = preProcess(prefix + "_ffn", opsPre, input, dropProb);
@@ -448,17 +449,25 @@ public:
     float ffnDropProb
       = inference_ ? 0 : opt<float>("transformer-dropout-ffn");
 
+    // float groupLasso = opt<float>("group-lasso-regulariser");
     ABORT_IF(depthFfn < 1, "Filter depth {} is smaller than 1", depthFfn);
-
     // the stack of FF layers
-    for(int i = 1; i < depthFfn; ++i)
-      output = denseInline(output, prefix, /*suffix=*/std::to_string(i), dimFfn, actFn, ffnDropProb);
-    output = denseInline(output, prefix, /*suffix=*/std::to_string(depthFfn), dimModel);
 
-    auto opsPost = opt<std::string>("transformer-postprocess");
-    output
-      = postProcess(prefix + "_ffn", opsPost, output, input, dropProb);
+    // for(int i = 1; i < depthFfn; ++i) {
+    for(int i = 1; i < depthFfn + 1; ++i) {
+      Expr cost;
+      // int inputDim = output->shape()[-1];
+      if (i != depthFfn)
+        std::tie(output, cost) = denseInlineRegularised(output, prefix, /*suffix=*/std::to_string(i), dimFfn, 8, actFn, ffnDropProb);
+      else
+        std::tie(output, cost) = denseInlineRegularised(output, prefix, /*suffix=*/std::to_string(depthFfn), dimModel, 8);
 
+      regularisers_.push_back(cost);
+    }
+  
+      auto opsPost = opt<std::string>("transformer-postprocess");
+      output
+        = postProcess(prefix + "_ffn", opsPost, output, input, dropProb);
     return output;
   }
 
@@ -575,6 +584,14 @@ public:
     auto encLayers = opt<int>("enc-depth");
     loadNumHeads(modelPath, "encoder", encLayers);
   }
+  
+  virtual const std::vector<Expr> getRegularisers() override {
+    return regularisers_;
+  }
+  virtual const Expr getRegulariser() override {
+    return regulariser_;
+  }
+
 
   virtual Ptr<EncoderState> build(Ptr<ExpressionGraph> graph,
                                   Ptr<data::CorpusBatch> batch) override {
@@ -640,7 +657,9 @@ public:
     return New<EncoderState>(context, batchMask, batch);
   }
 
-  virtual void clear() override {}
+  void clear() override {
+    regularisers_.clear();
+  }
 };
 
 class TransformerState : public DecoderState {
@@ -925,12 +944,21 @@ public:
   virtual const std::vector<Expr> getAlignments(int /*i*/ = 0) override {
     return alignments_; // [tgt index][beam depth, max src length, batch size, 1]
   }
+  
+  virtual const std::vector<Expr> getRegularisers() override {
+    return regularisers_; // [tgt index][beam depth, max src length, batch size, 1]
+  }
+  virtual const Expr getRegulariser() override {
+    return regulariser_;
+  }
+
 
   void clear() override {
     if (output_)
       output_->clear();
     cache_.clear();
     alignments_.clear();
+    regularisers_.clear();
     perLayerRnn_.clear(); // this needs to be cleared between batches. 
     // @TODO: figure out how to detect stale nodes i.e. nodes that are referenced, 
     // but where underlying memory has been deallocated by dropping all tensors 
