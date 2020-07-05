@@ -448,6 +448,11 @@ std::tuple<Expr, Expr> denseInlineRegularised(Expr x, std::string prefix, std::s
   auto W = graph->param(prefix + "_W" + suffix, { x->shape()[-1], outDim }, inits::glorotUniform());
   auto b = graph->param(prefix + "_b" + suffix, { 1,              outDim }, inits::zeros());
 
+  // BLOCK-SPARSE MASK
+  auto W_mask = 1 - eq(W, 0);
+  auto W_masked = W * W_mask;
+  
+  
   int h = W->shape()[0];
   int innerShape = W->shape()[0] * W->shape()[1] / (block * h);
   int blockNum = W->shape()[0] * W->shape()[1] / (block * block);
@@ -471,7 +476,7 @@ std::tuple<Expr, Expr> denseInlineRegularised(Expr x, std::string prefix, std::s
 
   // auto total_cost = W_cost + layer_cost;
 
-  x = affine(x, W * ugh, b);
+  x = affine(x, W_masked * ugh, b);
   if (actFn)
     x = actFn(x);
   x = dropout(x, dropProb);
