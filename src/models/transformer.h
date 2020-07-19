@@ -355,6 +355,7 @@ public:
     bool regWv = (regType.find("v") != std::string::npos);
     bool regWq = (regType.find("q") != std::string::npos);
     bool regWo = (regType.find("o") != std::string::npos);
+
     // @TODO: good opportunity to implement auto-batching here or do something manually?
     auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorotUniform());
     auto bq = graph_->param(prefix + "_bq", {       1, dimHeads * dimHeadSize}, inits::zeros());
@@ -707,21 +708,21 @@ public:
 
     auto embeddingLayer = getEmbeddingLayer(opt<bool>("ulr", false));
 
-    auto regType = opt<std::string>("group-lasso-regulariser-type", "");
-    if (regType.find("e") != std::string::npos) {
-      auto embeddingExpr = embeddingLayer->getEmbeddingExpr();
-      auto embCost = calculateRegularisation(embeddingExpr, 8);
-      // LOG(info, "PUSHING COST FOR EMB LAYER");
-      regularisers_.push_back(embCost);
-      auto ugh = embCost / embCost;
+    // auto regType = opt<std::string>("group-lasso-regulariser-type", "");
+    // if (regType.find("e") != std::string::npos) {
+      // auto embeddingExpr = embeddingLayer->getEmbeddingExpr();
+      // auto embCost = calculateRegularisation(embeddingExpr, 8);
+      // // LOG(info, "PUSHING COST FOR EMB LAYER");
+      // regularisers_.push_back(embCost);
+      // auto ugh = embCost / embCost;
   
-      std::tie(batchEmbeddings, batchMask) = embeddingLayer->apply((*batch)[batchIndex_]);
-      batchEmbeddings = addSpecialEmbeddings(batchEmbeddings, /*start=*/0, batch) * ugh;
-    }
-    else {
+      // std::tie(batchEmbeddings, batchMask) = embeddingLayer->apply((*batch)[batchIndex_]);
+      // batchEmbeddings = addSpecialEmbeddings(batchEmbeddings, [>start=<]0, batch) * ugh;
+    // }
+    // else {
       std::tie(batchEmbeddings, batchMask) = embeddingLayer->apply((*batch)[batchIndex_]);
       batchEmbeddings = addSpecialEmbeddings(batchEmbeddings, /*start=*/0, batch);
-    }
+    // }
     
     // reorganize batch and timestep
     batchEmbeddings = atleast_nd(batchEmbeddings, 4); // [beam depth=1, max length, batch size, vector dim]

@@ -103,13 +103,13 @@ public:
     if(regFloat != 0 && !inference_ && regType != "") {
       // LOG(info, "INSIDE GROUP LASSO COST");
 
-      std::vector<Expr> encRegularisers = {};
+      // std::vector<Expr> encRegularisers = {};
       std::vector<Expr> decRegularisers = {};
       
-      if (regType.find("e") != std::string::npos)
+      // if (regType.find("e") != std::string::npos)
         auto encRegularisers = encdec->getEncoders()[0]->getRegularisers();
       if (regType.find("d") != std::string::npos)
-        auto decRegularisers = encdec->getDecoders()[0]->getRegularisers();
+        decRegularisers = encdec->getDecoders()[0]->getRegularisers();
       
       auto regulariserLoss = regulariserCost(graph, corpusBatch, options_, encRegularisers, decRegularisers);
       multiLoss->push_back(regulariserLoss);
