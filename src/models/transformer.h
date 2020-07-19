@@ -130,7 +130,8 @@ public:
 
       auto signal = graph_->constant({dimWords, 1, dimEmb},
                                      inits::sinusoidalPositionEmbeddings(start));
-      embeddings = embeddings + signal;
+      // auto mask = gt(embeddings, -1e-8) * lt(embeddings, 1e-8);
+      embeddings = (embeddings + signal);
     }
 
     return embeddings;
@@ -309,6 +310,34 @@ public:
     return output;
   }
 
+  Expr calculateRegularisation(Expr W, int block) {
+    
+    // // BLOCK-SPARSE MASK
+    // auto W_mask = 1 - eq(W, 0);
+    // auto W_masked = W * W_mask;
+    
+    
+    int h = W->shape()[0];
+    int innerShape = W->shape()[0] * W->shape()[1] / (block * h);
+    int blockNum = W->shape()[0] * W->shape()[1] / (block * block);
+    auto W_reshaped = reshape(W, {h / block, block, innerShape, block}); 
+    auto W_transposed = transpose(W_reshaped, {0, 2, 1, 3});
+    auto W_blocks = reshape(W_transposed, {1, blockNum, block, block});
+  
+  
+    // Calculate L2-regulariser
+   
+    // Expr cost; 
+    auto W_pow = W_blocks * W_blocks;
+    auto W_sum = sum(sum(W_pow, -2), -1);
+    auto W_sqrt = sqrt(W_sum);
+    auto W_cost = sum(W_sqrt, -3);
+    // debug(W_cost);
+  
+    // auto layer_cost = sqrt(sum(W_sum, -3));
+    return W_cost;
+  }
+
   Expr MultiHead(std::string prefix,
                  int dimOut,
                  int dimHeads,
@@ -320,9 +349,27 @@ public:
                  bool cache = false,
                  bool saveAttentionWeights = false) {
     int dimModel = q->shape()[-1];
+    auto regType = opt<std::string>("group-lasso-regulariser-type", "");
+    bool regBool = (regType.find("h") != std::string::npos);
+    bool regWk = (regType.find("k") != std::string::npos);
+    bool regWv = (regType.find("v") != std::string::npos);
+    bool regWq = (regType.find("q") != std::string::npos);
+    bool regWo = (regType.find("o") != std::string::npos);
     // @TODO: good opportunity to implement auto-batching here or do something manually?
     auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorotUniform());
     auto bq = graph_->param(prefix + "_bq", {       1, dimHeads * dimHeadSize}, inits::zeros());
+
+    // Regularise Wq //
+    if (regBool || regWq) {
+      auto Wq_cost = calculateRegularisation(Wq, 8);
+      // LOG(info, "PUSHING COST FOR WQ LAYER {}", prefix);
+      regularisers_.push_back(Wq_cost);
+      // stupid hack to connect to a graph, it gets the cost later but screams about more than 1 top node
+      auto ugh = Wq_cost / Wq_cost;
+      Wq = Wq * ugh;
+    }
+    ////////////////
+
     auto qh = affine(q, Wq, bq);
     qh = SplitHeads(qh, dimHeads); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
 
@@ -337,6 +384,18 @@ public:
     }
     else {
       auto Wk = graph_->param(prefix + "_Wk", {dimModel, dimHeads * dimHeadSize}, inits::glorotUniform());
+    
+      // Regularise Wk //
+      if (regBool || regWk) {
+        // LOG(info, "PUSHING COST FOR WK LAYER {}", prefix);
+        auto Wk_cost = calculateRegularisation(Wk, 8);
+        regularisers_.push_back(Wk_cost);
+        // stupid hack to connect to a graph, it gets the cost later but screams about more than 1 top node
+        auto ugh = Wk_cost / Wk_cost;
+        Wk = Wk * ugh;
+      }
+      //////////////////
+
       auto bk = graph_->param(prefix + "_bk", {1,        dimHeads * dimHeadSize}, inits::zeros());
 
       kh = affine(keys, Wk, bk);     // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
@@ -352,6 +411,17 @@ public:
     } else {
       auto Wv = graph_->param(prefix + "_Wv", {dimModel, dimHeads * dimHeadSize}, inits::glorotUniform());
       auto bv = graph_->param(prefix + "_bv", {1,        dimHeads * dimHeadSize}, inits::zeros());
+    
+      // Regularise Wv //
+      if (regBool || regWv) {
+        // LOG(info, "PUSHING COST FOR WV LAYER {}", prefix);
+        auto Wv_cost = calculateRegularisation(Wv, 8);
+        regularisers_.push_back(Wv_cost);
+        // stupid hack to connect to a graph, it gets the cost later but screams about more than 1 top node
+        auto ugh = Wv_cost / Wv_cost;
+        Wv = Wv * ugh;
+      }
+      //////////////////
 
       vh = affine(values, Wv, bv); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
       vh = SplitHeads(vh, dimHeads);
@@ -372,6 +442,17 @@ public:
     if(project || dimAtt != dimOut) {
       auto Wo
         = graph_->param(prefix + "_Wo", {dimAtt, dimOut}, inits::glorotUniform());
+      // Regularise Wo //
+      if (regBool || regWo) {
+        // LOG(info, "PUSHING COST FOR WO LAYER {}", prefix);
+        auto Wo_cost = calculateRegularisation(Wo, 8);
+        regularisers_.push_back(Wo_cost);
+        // stupid hack to connect to a graph, it gets the cost later but screams about more than 1 top node
+        auto ugh = Wo_cost / Wo_cost;
+        Wo = Wo * ugh;
+      }
+      //////////////////
+
       auto bo = graph_->param(prefix + "_bo", {1, dimOut}, inits::zeros());
       output = affine(output, Wo, bo);
     }
@@ -451,18 +532,32 @@ public:
 
     // float groupLasso = opt<float>("group-lasso-regulariser");
     ABORT_IF(depthFfn < 1, "Filter depth {} is smaller than 1", depthFfn);
+    
+    auto regType = opt<std::string>("group-lasso-regulariser-type", "");
+    bool regBool = (regType.find("f") != std::string::npos);
+    // LOG(info, "FFN regType {} {}", regType, regBool);
+
+
     // the stack of FF layers
-
-    // for(int i = 1; i < depthFfn; ++i) {
-    for(int i = 1; i < depthFfn + 1; ++i) {
-      Expr cost;
-      // int inputDim = output->shape()[-1];
-      if (i != depthFfn)
-        std::tie(output, cost) = denseInlineRegularised(output, prefix, /*suffix=*/std::to_string(i), dimFfn, 8, actFn, ffnDropProb);
-      else
-        std::tie(output, cost) = denseInlineRegularised(output, prefix, /*suffix=*/std::to_string(depthFfn), dimModel, 8);
-
-      regularisers_.push_back(cost);
+    if (regBool) {
+      for(int i = 1; i < depthFfn + 1; ++i) {
+        Expr cost;
+        if (i != depthFfn)
+	  std::tie(output, cost) = denseInlineRegularised(output, prefix, /*suffix=*/std::to_string(i), dimFfn, 8, actFn, ffnDropProb);
+        else
+	  std::tie(output, cost) = denseInlineRegularised(output, prefix, /*suffix=*/std::to_string(depthFfn), dimModel, 8); 
+	// LOG(info, "PUSHING COST FOR FFN LAYER {}", prefix);
+	regularisers_.push_back(cost);
+      }
+    }
+    else {
+      for(int i = 1; i < depthFfn + 1; ++i) {
+        Expr cost;
+        if (i != depthFfn)
+          output = denseInline(output, prefix, /*suffix=*/std::to_string(i), dimFfn, actFn, ffnDropProb);
+        else
+          output = denseInline(output, prefix, /*suffix=*/std::to_string(depthFfn), dimModel);
+      }
     }
   
       auto opsPost = opt<std::string>("transformer-postprocess");
@@ -612,8 +707,21 @@ public:
 
     auto embeddingLayer = getEmbeddingLayer(opt<bool>("ulr", false));
 
-    std::tie(batchEmbeddings, batchMask) = embeddingLayer->apply((*batch)[batchIndex_]);
-    batchEmbeddings = addSpecialEmbeddings(batchEmbeddings, /*start=*/0, batch);
+    auto regType = opt<std::string>("group-lasso-regulariser-type", "");
+    if (regType.find("e") != std::string::npos) {
+      auto embeddingExpr = embeddingLayer->getEmbeddingExpr();
+      auto embCost = calculateRegularisation(embeddingExpr, 8);
+      // LOG(info, "PUSHING COST FOR EMB LAYER");
+      regularisers_.push_back(embCost);
+      auto ugh = embCost / embCost;
+  
+      std::tie(batchEmbeddings, batchMask) = embeddingLayer->apply((*batch)[batchIndex_]);
+      batchEmbeddings = addSpecialEmbeddings(batchEmbeddings, /*start=*/0, batch) * ugh;
+    }
+    else {
+      std::tie(batchEmbeddings, batchMask) = embeddingLayer->apply((*batch)[batchIndex_]);
+      batchEmbeddings = addSpecialEmbeddings(batchEmbeddings, /*start=*/0, batch);
+    }
     
     // reorganize batch and timestep
     batchEmbeddings = atleast_nd(batchEmbeddings, 4); // [beam depth=1, max length, batch size, vector dim]

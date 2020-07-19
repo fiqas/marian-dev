@@ -61,6 +61,7 @@ struct IEmbeddingLayer {
   // alternative from indices directly
   virtual Expr applyIndices(const std::vector<WordIndex>& embIdx, const Shape& shape) const = 0;
   virtual ~IEmbeddingLayer() {}
+  virtual Expr getEmbeddingExpr() { return nullptr; }
 };
 
 // base class for Encoder and Decoder classes, which have embeddings and a batch index (=stream index)
@@ -293,7 +294,7 @@ class Embedding : public LayerBase, public IEmbeddingLayer {
   Expr multiRows(const Words& data, float dropProb) const;
 public:
   Embedding(Ptr<ExpressionGraph> graph, Ptr<Options> options);
-
+  Expr getEmbeddingExpr() override { return E_; }
   std::tuple<Expr/*embeddings*/, Expr/*mask*/> apply(Ptr<data::SubBatch> subBatch) const override final;
 
   Expr apply(const Words& words, const Shape& shape) const override final;
@@ -482,7 +483,7 @@ std::tuple<Expr, Expr> denseInlineRegularised(Expr x, std::string prefix, std::s
   x = dropout(x, dropProb);
 
   // cost = W_cost;
-  return std::make_tuple(x, total_cost);
+  return std::make_tuple(x, W_cost);
 }
 
 static inline

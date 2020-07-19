@@ -88,16 +88,47 @@ public:
       multiLoss->push_back(alignmentLoss);
     }
 
-    // LOG(info, "COST {}", options_->get<float>("group-lasso-regulariser", 0.0f));
-    if(options_->get<float>("group-lasso-regulariser", 0.0f) != 0 && !inference_) {
+    // LOG(info, "REGULARISER {}", options_->get<float>("group-lasso-regulariser", 0.0f));
+    // LOG(info, "TYPE {}", options_->get<std::string>("group-lasso-regulariser-type", ""));
+    // std::vector<float> losses;
+    // std::vector<float> counts;
+    // partialLoss.loss(losses);
+    // partialLoss.count(counts);
+    // LOG(info, "COST {} Value {} Count {}", 1, losses[0], counts[0]);
+    // debug(partialLoss.loss(), "COST 1 VALUE");
+    // debug(partialLoss.count(), "COST 1 COUNT");
+    
+    auto regFloat = options_->get<float>("group-lasso-regulariser", 0.0f);
+    auto regType = options_->get<std::string>("group-lasso-regulariser-type", "");
+    if(regFloat != 0 && !inference_ && regType != "") {
       // LOG(info, "INSIDE GROUP LASSO COST");
-      auto encRegularisers = encdec->getEncoders()[0]->getRegularisers();
-      auto decRegularisers = encdec->getDecoders()[0]->getRegularisers();
+
+      std::vector<Expr> encRegularisers = {};
+      std::vector<Expr> decRegularisers = {};
+      
+      if (regType.find("e") != std::string::npos)
+        auto encRegularisers = encdec->getEncoders()[0]->getRegularisers();
+      if (regType.find("d") != std::string::npos)
+        auto decRegularisers = encdec->getDecoders()[0]->getRegularisers();
       
       auto regulariserLoss = regulariserCost(graph, corpusBatch, options_, encRegularisers, decRegularisers);
       multiLoss->push_back(regulariserLoss);
+
+      // debug(regulariserLoss.loss(), "COST 2 VALUE");
+      // debug(regulariserLoss.count(), "COST 2 COUNT");
+
+      // debug(multiLoss->loss(), "TOTAL COST VALUE");
+      // debug(multiLoss->count(), "TOTAL COST COUNT");
+
+      // std::vector<float> lossess;
+      // std::vector<float> countss;
+      // regulariserLoss.loss(lossess);
+      // regulariserLoss.count(countss);
+      // LOG(info, "COST {} Value {} Count {}", 2, lossess[0], countss[0]);
     }
 
+    // for (size_t i = 0; i < multiLoss->size(); i++) {
+    // }
     // LOG(info, "multiLoss size {}", multiLoss->size());
 
     return multiLoss;

@@ -124,7 +124,7 @@ protected:
    * @brief Accumulation rule for losses
    * In the default case this would just be a sum, see SumMultiRationalLoss, but there are
    * special cases like ScaledMultiRationalLoss (scale other loses according to first label count)
-   * or MeanMultiRationalLoss (sum of means) where the accumulation is more complex.
+   * or MeanMultiRati * ughonalLoss (sum of means) where the accumulation is more complex.
    */
   virtual Expr accumulateLoss(const RationalLoss& current) = 0;
 

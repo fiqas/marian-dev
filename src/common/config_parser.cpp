@@ -341,7 +341,9 @@ void ConfigParser::addOptionsModel(cli::CLIWrapper& cli) {
     cli.add<float>("--transformer-dropout-ffn",
         "Dropout for transformer filter (0 = no dropout)");
     cli.add<float>("--group-lasso-regulariser",
-        "Apply group lasso regularisation in FFN layers (transformer)", 0.0f);
+        "Apply group lasso regularisation in layers (transformer)", 0.0f);
+    cli.add<std::string>("--group-lasso-regulariser-type",
+        "Apply group lasso regularisation to specific layers (transformer), f = ffn, h = heads, e = embeddings", "");
   }
   cli.switchGroup(previous_group);
   // clang-format on
