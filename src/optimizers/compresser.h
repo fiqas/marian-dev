@@ -9,7 +9,17 @@
 #include "functional/functional.h"
 
 namespace marian {
+#ifdef CUDA_FOUND
 void compressImpl(Tensor t, int bit, float base, float clipRange, int kMeanStep = 0);
+#else
+inline void compressImpl(Tensor t, int bit, float base, float clipRange, int kMeanStep = 0) {
+  t;
+  bit;
+  base;
+  clipRange;
+  kMeanStep;
+  return;
+#endif
 
 class Compresser {
 public:
