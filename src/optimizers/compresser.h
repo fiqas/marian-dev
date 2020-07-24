@@ -19,6 +19,7 @@ inline void compressImpl(Tensor t, int bit, float base, float clipRange, int kMe
   clipRange;
   kMeanStep;
   return;
+}
 #endif
 
 class Compresser {
