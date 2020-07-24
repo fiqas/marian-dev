@@ -111,7 +111,7 @@ public:
       if (regType.find("d") != std::string::npos)
         decRegularisers = encdec->getDecoders()[0]->getRegularisers();
       
-      auto regulariserLoss = regulariserCost(graph, corpusBatch, options_, encRegularisers, decRegularisers);
+      auto regulariserLoss = regulariserCost(graph, corpusBatch, options_, encRegularisers, decRegularisers, partialLoss.count());
       multiLoss->push_back(regulariserLoss);
 
       // debug(regulariserLoss.loss(), "COST 2 VALUE");

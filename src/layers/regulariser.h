@@ -9,12 +9,14 @@ static inline RationalLoss regulariserCost(Ptr<ExpressionGraph> /*graph*/,
                                                Ptr<data::CorpusBatch> batch,
                                                Ptr<Options> options,
                                                std::vector<Expr> encoderCosts,
-					       std::vector<Expr> decoderCosts
+					                                     std::vector<Expr> decoderCosts,
+                                               Expr labels
 					       ) { // [beam depth=1, max src length, batch size, tgt length]
 
   float regulariserScalar = options->get<float>("group-lasso-regulariser");
 
-  int labels = decoderCosts.size() + encoderCosts.size();
+  // int layerCount = decoderCosts.size() + encoderCosts.size();
+  int layerCount = 1.0;
   // float epsilon = 1e-6f;
   Expr regulariserLoss = encoderCosts[0]; // sum up loss over all regularisation costs
   
@@ -40,7 +42,8 @@ static inline RationalLoss regulariserCost(Ptr<ExpressionGraph> /*graph*/,
 
 
 
-  return RationalLoss(regulariserScalar * regulariserLoss, (float)labels);
+  return RationalLoss(regulariserScalar * regulariserLoss, layerCount);
+  // return RationalLoss(regulariserScalar * regulariserLoss, layerCount);
 }
 
 }  // namespace marian
