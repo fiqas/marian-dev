@@ -1,6 +1,10 @@
 #include "catch.hpp"
 #include "graph/expression_graph.h"
 #include "graph/expression_operators.h"
+#include "3rd_party/cnpy_org/cnpy.h"
+
+
+// #include<mkl.h>
 
 #ifdef CUDA_FOUND
 #include "tensors/gpu/backend.h"
@@ -392,6 +396,248 @@ void tests(DeviceType device, Type floatType = Type::float32) {
     CHECK(values == vC);
   }
 
+  if(device == DeviceType::cpu) {
+    SECTION("mkl csr-dot product") {
+
+    // CSR WITHOUT ANY MARIAN RELATED STUFF, JUST MKL AND ARRAYS 
+     
+    // CSR representation of this matrix, example taken from MKL documentation
+      // [  1 -1  0 -3  0 ]
+      // [ -1  5  0  0  0 ]
+      // [  0  0  4  6  4 ]
+      // [ -3  0  6  7  0 ]
+      // [  0  0  4  0 -5 ]
+      int m, n, k, z;
+      m = 5;
+      k = 5;
+      n = 6;
+      z = 13;
+    
+      float* C_dense = new float[m * n] {0};
+      float* B_dense = new float[k * n] {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+      float* A_dense = new float[m * k] {1, -1, 0, -3, 0, -1, 5, 0, 0, 0, 0, 0, 4, 6, 4, -3, 0, 6, 7, 0, 0, 0, 4, 0, -5};
+    
+      float* A = new float[z] {1, -1, -3, -2, 5, 4, 6, 4, -4, 2, 7, 8, -5};
+      MKL_INT* A_col = new MKL_INT[z] {0, 1, 3, 0, 1, 2, 3, 4, 0, 2, 3, 1, 4};
+      MKL_INT* A_pointB = new MKL_INT[m] {0, 3, 5, 8, 11};
+      MKL_INT* A_pointE = new MKL_INT[m] {3, 5, 8, 11, 13};
+      
+      printf ("A dense matrix A: \n");
+      for (int i = 0; i < std::min(m, 6); i++) {
+        for (int j = 0; j < std::min(k, 6); j++) {
+          std::cerr << A_dense[j + i * k] << " ";
+        }
+        std::cerr << std::endl;
+      }
+      std::cerr << std::endl;
+    
+      sparse_matrix_t A_handle;
+      auto sparse_status = mkl_sparse_s_create_csr(&A_handle, 
+    			  SPARSE_INDEX_BASE_ZERO, 
+    			  m,
+    			  k,
+    			  A_pointB,
+    			  A_pointE,
+    			  A_col,
+    			  A);
+    
+      if (sparse_status == SPARSE_STATUS_SUCCESS) {
+        std::cerr << "Created a sparse matrix" << std::endl;
+      }
+      
+      printf ("C dense matrix before: \n");
+      for (int i = 0; i < std::min(m, 6); i++) {
+        for (int j = 0; j < std::min(n, 6); j++) {
+          std::cerr << C_dense[j + i * n] << " ";
+        }
+        std::cerr << std::endl;
+      }
+      std::cerr << std::endl;
+    
+      
+      matrix_descr descrA;
+      descrA.type = SPARSE_MATRIX_TYPE_GENERAL;
+      auto mm_sparse_status = mkl_sparse_s_mm(SPARSE_OPERATION_NON_TRANSPOSE, 
+    					  1.0, 
+    					  A_handle, 
+    					  descrA, 
+    					  SPARSE_LAYOUT_ROW_MAJOR, 
+    					  B_dense,  //
+    					  n, 
+    					  n, 
+    					  0.0f, 
+    					  C_dense, 
+    					  n);
+      
+      if (mm_sparse_status == SPARSE_STATUS_SUCCESS) {
+        std::cerr << "Multiplied a sparse matrix" << std::endl;
+      }
+      
+      printf ("C dense matrix after: \n");
+      for (int i = 0; i < std::min(m, 6); i++) {
+        for (int j = 0; j < std::min(n, 6); j++) {
+          std::cerr << C_dense[j + i * n] << " ";
+        }
+        std::cerr << std::endl;
+      }
+          
+
+      graph->clear();
+      values.clear();
+      
+      std::string model_name = "./model_regularised_0.3_0.1_f_MASKED_BLOCKS_DOUBLE_CONVERTED.npz";
+
+      cnpy_org::NpyArray arr_vals = cnpy_org::npz_load(model_name, "encoder_l1_ffn_W1_vals");
+      auto vals_shape = arr_vals.shape;
+      std::cout << "Vals shape: " << vals_shape[0] << " " << vals_shape[1] << std::endl;
+      float* A_vals = arr_vals.data<float>();
+      std::cout << A_vals[0] << std::endl;
+      // std::vector<float> A_vals_v(A_vals, A_vals + arr_vals.shape[1]);
+
+      // cnpy_org::NpyArray arr_cols = cnpy_org::npz_load(model_name, "encoder_l1_ffn_W1_cols");
+      // int* A_cols = arr_cols.data<int>();
+      // std::vector<float> A_cols_v(A_cols, A_cols + arr_cols.shape[1]);
+
+      // cnpy_org::NpyArray arr_ptrB = cnpy_org::npz_load(model_name, "encoder_l1_ffn_W1_ptrB");
+      // int* A_ptrB = arr_ptrB.data<int>();
+      // std::vector<float> A_ptrB_v(A_ptrB, A_ptrB + arr_ptrB.shape[1]);
+
+      // cnpy_org::NpyArray arr_ptrE = cnpy_org::npz_load(model_name, "encoder_l1_ffn_W1_ptrE");
+      // int* A_ptrE = arr_ptrE.data<int>();
+      // std::vector<float> A_ptrE_v(A_ptrE, A_ptrE + arr_ptrE.shape[1]);
+
+      int A_rows_num = 256;
+      int A_cols_num = 1536;
+
+      std::cout << "Shape: " << A_rows_num << " x " << A_cols_num << std::endl;
+      std::cout << "Vector lengths..." << std::endl;
+      // std::cout << "Vals: " << A_vals_v.size() << std::endl;
+      // std::cout << "Cols: " << A_cols_v.size() << std::endl;
+      // std::cout << "PtrB: " << A_ptrB_v.size() << std::endl;
+      // std::cout << "PtrE: " << A_ptrE_v.size() << std::endl;
+
+      ////////////////////////////////////////////
+      
+      graph->clear();
+      values.clear();
+      
+      std::vector<float> vD = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+      std::vector<float> vSval = {1, -1, -3, -2, 5, 4, 6, 4, -4, 2, 7, 8, -5};
+      std::vector<MKL_INT> vScol = {0, 1, 3, 0, 1, 2, 3, 4, 0, 2, 3, 1, 4};
+      std::vector<MKL_INT> vSptB = {0, 3, 5, 8, 11};
+      std::vector<MKL_INT> vSptE = {3, 5, 8, 11, 13};
+
+      // Initialise nodes
+      auto D = graph->param("dense", { 5, 6}, inits::ones());
+      auto O = graph->param("output", { 5, 6}, inits::ones());
+      auto eSval  = graph->param("Sval",  { 13 }, inits::fromVector(vSval), floatType);
+      auto eScol  = graph->param("Scol",  { 13 }, inits::fromVector(vScol), Type::int32);
+      auto eSptB  = graph->param("SptB",  { 5 }, inits::fromVector(vSptB), Type::int32);
+      auto eSptE  = graph->param("SptE",  { 5 }, inits::fromVector(vSptE), Type::int32);
+
+      // // std::cerr < "HUUUUUUUUJ " << std::endl;
+      // // std::cerr < "HUUUUUUUUJ " << typeof(MKL_INT) << std::endl;
+      matchOrAbort<MKL_INT>(eScol->value_type());
+      matchOrAbort<MKL_INT>(eSptB->value_type());
+      matchOrAbort<MKL_INT>(eSptE->value_type());
+      
+      std::cerr << "HUUUUUUUUJ " << std::endl;
+      
+    
+      // auto* pO = new float[30];
+
+      // float* pSval = vSval.data();
+      // MKL_INT* pScol = vScol.data();
+      // MKL_INT* pSptB = vSptB.data();
+      // MKL_INT* pSptE = vSptE.data();
+
+
+      // float* pSval = eSval->val()->data<float>();
+      // std::cout << "pSval " << pSval << std::endl;
+      // int* pScol = eScol->val()->data<int>();
+      // int* pSptB = eSptB->val()->data<int>();
+      // int* pSptE = eSptE->val()->data<int>();
+  
+      // sparse_matrix_t S_csr_handle;
+      // auto csr_sparse_status = mkl_sparse_s_create_csr(&S_csr_handle, 
+			  // SPARSE_INDEX_BASE_ZERO, 
+			  // m,
+			  // k,
+			  // pSptB,
+			  // pSptE,
+			  // pScol,
+			  // pSval);
+      
+      // if (csr_sparse_status != SPARSE_STATUS_SUCCESS) {
+	// std::cerr << "Failed at creating CSR matrix" << std::endl;
+      // }
+      // else {
+	// std::cerr << "Created CSR handle" << std::endl;
+      // }
+      
+      
+      // matrix_descr descrS;
+      // descrS.type = SPARSE_MATRIX_TYPE_GENERAL;
+
+      // // MKL_INT S_r = 5;
+      // // MKL_INT S_c = 5;
+      // // MKL_INT D_r = 5;
+      // MKL_INT D_c = 6;
+
+      // // MKL_INT O_r = 5;
+      // MKL_INT O_c = 5;
+
+      // auto mm_sparse_status = mkl_sparse_s_mm(SPARSE_OPERATION_NON_TRANSPOSE,
+                                              // 1.0, 
+                                              // S_csr_handle, 
+                                              // descrS, 
+                                              // SPARSE_LAYOUT_ROW_MAJOR, 
+                                              // D->val()->data(),  //
+                                              // O_c, 
+                                              // D_c, 
+                                              // 0.0f, 
+                                              // pO, 
+                                              // O_c);
+
+      // if (csr_sparse_status == SPARSE_STATUS_SUCCESS) {
+          // std::cerr << "Created a sparse matrix" << std::endl;
+        // } else if (csr_sparse_status == SPARSE_STATUS_NOT_INITIALIZED) {
+	    // std::cerr << "The routine encountered an empty handle or matrix array." << std::endl;
+	  // } else if (csr_sparse_status == SPARSE_STATUS_ALLOC_FAILED) {
+	      // std::cerr << "Internal memory allocation failed." << std::endl;
+	    // } else if (csr_sparse_status == SPARSE_STATUS_INVALID_VALUE) {
+		// std::cerr << "The input parameters contain an invalid value." << std::endl;
+	      // } else if (csr_sparse_status == SPARSE_STATUS_EXECUTION_FAILED) {
+		  // std::cerr << "Execution failed. ." << std::endl;
+		// } else if (csr_sparse_status == SPARSE_STATUS_INTERNAL_ERROR) {
+		    // std::cerr << "An error algorithm implementation occurred. " << std::endl;
+		  // } else if (csr_sparse_status == SPARSE_STATUS_NOT_SUPPORTED) {
+		      // std::cerr << "The requested operation is not supported.  " << std::endl;
+		    // } else {
+			// std::cerr << "Unknown status: " << csr_sparse_status << std::endl;
+		      // }
+  // if (mm_sparse_status == SPARSE_STATUS_SUCCESS) {
+    // std::cerr << "Multiplied a CSR sparse matrix outside of a graph" << std::endl;
+  // }
+
+      std::cerr << "HOOOOOOOOO" << std::endl;
+
+      auto SxD = mkl_csr_dot( // sparse x dense
+	    {5, 5}, // S shape
+	    eSval,
+	    eScol,
+	    eSptB,
+	    eSptE,
+	    D,
+	    false);
+
+      debug(SxD);
+      std::cerr << "output shape " << SxD->shape() << std::endl;
+      graph->forward();
+      std::cerr << "hohoohohohohoohohohohohohohoh" << std::endl;
+    }
+
+  }
   // Currently no support for fp16 or CPU - TODO use MKL for CPU, convert to float32 on the fly for fp16 via cast(x, Type::float16) or internally
   if(device == DeviceType::gpu && floatType == Type::float32) {
     SECTION("csr-dot product") {

@@ -190,24 +190,30 @@ void ProdWithBias(marian::Tensor C,
   cpu::int16::AddBias(C, bias);
 }
 
-void CSRProd(marian::Tensor C,
+void MKLCSRProd(marian::Tensor C,
              Ptr<Allocator> /*allocator*/,
              const marian::Tensor& S_values,
-             const marian::Tensor& S_indices,
-             const marian::Tensor& S_offsets,
+             const marian::Tensor& S_columns,
+             const marian::Tensor& S_pointerB,
+             const marian::Tensor& S_pointerE,
              const marian::Tensor& D,
              bool transS,
-             bool swapOperands,
+             // bool swapOperands, // Let's ignore that for now
              float beta) {
-  C, S_values, S_indices, S_offsets, D;
-
+  C, S_values, S_columns, S_pointerB, S_pointerE, D;
+  std::cerr << "Inside MKLCSRProd function" << std::endl;
   // Note: The CPU implementation currently only implements what's needed for decoding.
 
   // interpret tensor dimensions as matrix dimensions
   const auto& shapeC = C->shape();
   const auto& shapeD = D->shape();
+
+  auto ldd = D->shape()[-1]; // leading dimension of D
+  auto ldc = C->shape()[-1]; // leading dimension of C
   // If swapOperands, S and D are swapped (C = D x S instead of C = S x D).
   // In that case, in the next 6 lines, please read all dimensions as if they were reversed in order.
+  
+  bool swapOperands = false;
   auto rowsC = shapeC[-(int)swapOperands];
   auto colsC = shapeC.elements() / rowsC;
   auto rowsD = shapeD[-(int)swapOperands];
@@ -215,51 +221,137 @@ void CSRProd(marian::Tensor C,
   auto rowsS = transS ? rowsD : rowsC;
   auto colsS = transS ? rowsC : rowsD;
   ABORT_IF(colsD != colsC, "Inconsistent outer dimensions in CSR product");
-  if (swapOperands) { // make rowsX actual row dimensions again, likewise colsX
-    std::swap(rowsC, colsC);
-    std::swap(rowsD, colsD);
-    std::swap(rowsS, colsS);
-  }
+  
+  
   // sparse arrays
-  auto numOffsets = S_offsets->shape().elements() - 1; // -1 since last value is length
-  ABORT_IF(numOffsets != rowsS, "Unexpected number of rows in CSR argument"); numOffsets;
-  ABORT_IF(S_values->shape() != S_indices->shape(), "CSR values and indices must have the same size");
-  if (!transS && !swapOperands) {
-    // C = S * D, where D = CSR matrix
-    const auto* offsets = S_offsets->data<IndexType>();
-    const auto* indices = S_indices->data<IndexType>();
-    const auto* values  = S_values->data<float>();
-    const auto* dataD   = D->data<float>();
-    auto*       dataC   = C->data<float>();
-    ABORT_IF(beta != 0 && beta != 1, "cpu::CSRProd only supports beta = 0 or 1");
-    for (size_t i = 0; i < rowsC; i++) {
-      auto add = (beta == 1); // first element: overwrite or add according to beta; subsequent elements: add
-      for (size_t kk = offsets[i]; kk < offsets[i + 1]; kk++) {
-        auto k = indices[kk];    // fetch the non-zero row
-        auto valS = values[kk]; // and the value from that row
-        // This code is written with the hope for good vectorization, and the hope
-        // that adding to memory will be done efficiently by the caching system.
-        if (valS == 1)
-          if (!add)
-            for (size_t j = 0; j < colsC; j++)
-              dataC[i * colsC/*==colsD*/ + j] = dataD[k * colsC/*==colsD*/ + j]; // this is a memcpy()
-          else
-            for (size_t j = 0; j < colsC; j++)
-              dataC[i * colsC/*==colsD*/ + j] += dataD[k * colsC/*==colsD*/ + j]; // this is a contiguous-vector addition
-        else
-          if (!add)
-            for (size_t j = 0; j < colsC; j++)
-              dataC[i * colsC/*==colsD*/ + j] = valS * dataD[k * colsC/*==colsD*/ + j];
-          else
-            for (size_t j = 0; j < colsC; j++)
-              dataC[i * colsC/*==colsD*/ + j] += valS * dataD[k * colsC/*==colsD*/ + j]; // notice the +=
-        add = true; // next iteration will add to existing result
-      }
-    }
+  auto numPointerB = S_pointerB->shape().elements();
+  auto numPointerE = S_pointerE->shape().elements();
+
+  ABORT_IF(numPointerB != numPointerE, "pointerB and pointerE in CSR are not the same length"); numPointerB;
+  ABORT_IF(numPointerB != rowsS, "Unexpected number of rows in CSR argument, rows != len(pointerB)"); numPointerB;
+  ABORT_IF(numPointerE != rowsS, "Unexpected number of rows in CSR argument, rows != len(pointerE)"); numPointerE;
+  ABORT_IF(S_values->shape() != S_columns->shape(), "CSR values and indices must have the same size");
+  
+  typedef MKL_INT IndexType;
+  auto* columns = S_columns->data<IndexType>();
+  auto* pointerB = S_pointerB->data<IndexType>();
+  auto* pointerE = S_pointerE->data<IndexType>();
+  auto* values  = S_values->data<float>();
+  auto* dataD   = D->data<float>();
+  auto*       dataC   = C->data<float>();
+
+
+  sparse_matrix_t S_csr_handle;
+  auto csr_sparse_status = mkl_sparse_s_create_csr(&S_csr_handle, 
+			  SPARSE_INDEX_BASE_ZERO, 
+			  rowsS,
+			  colsS,
+			  pointerB,
+			  pointerE,
+			  columns,
+			  values);
+
+  if (csr_sparse_status == SPARSE_STATUS_SUCCESS) {
+    std::cerr << "Created a CSR sparse matrix" << std::endl;
   }
-  else
-    ABORT("CSRProd for transS={}, swapOperands={} is not yet implemented for CPU", transS, swapOperands);
+  
+  auto csr_optimise_status = mkl_sparse_optimize(S_csr_handle);
+  if (csr_optimise_status == SPARSE_STATUS_SUCCESS) {
+    std::cerr << "Optimised a CSR sparse matrix" << std::endl;
+  }
+    
+  matrix_descr descrS;
+  descrS.type = SPARSE_MATRIX_TYPE_GENERAL;
+  auto mm_sparse_status = mkl_sparse_s_mm(SPARSE_OPERATION_NON_TRANSPOSE,
+					  1.0, 
+					  S_csr_handle, 
+					  descrS, 
+					  SPARSE_LAYOUT_ROW_MAJOR, 
+					  dataD,  //
+					  colsD, 
+					  ldd, 
+					  0.0f, 
+					  dataC, 
+					  ldc);
+
+  if (mm_sparse_status == SPARSE_STATUS_SUCCESS) {
+    std::cerr << "Multiplied a CSR sparse matrix" << std::endl;
+  }
+
 }
+
+void CSRProd(marian::Tensor C,
+	     Ptr<Allocator> /*allocator*/,
+	     const marian::Tensor& S_values,
+	     const marian::Tensor& S_indices,
+	     const marian::Tensor& S_offsets,
+	     const marian::Tensor& D,
+	     bool transS,
+	     bool swapOperands,
+	     float beta) {
+	ABORT("hohoho");
+}
+  // C, S_values, S_indices, S_offsets, D;
+
+  // // Note: The CPU implementation currently only implements what's needed for decoding.
+
+  // // interpret tensor dimensions as matrix dimensions
+  // const auto& shapeC = C->shape();
+  // const auto& shapeD = D->shape();
+  // // If swapOperands, S and D are swapped (C = D x S instead of C = S x D).
+  // // In that case, in the next 6 lines, please read all dimensions as if they were reversed in order.
+  // auto rowsC = shapeC[-(int)swapOperands];
+  // auto colsC = shapeC.elements() / rowsC;
+  // auto rowsD = shapeD[-(int)swapOperands];
+  // auto colsD = shapeD.elements() / rowsD;
+  // auto rowsS = transS ? rowsD : rowsC;
+  // auto colsS = transS ? rowsC : rowsD;
+  // ABORT_IF(colsD != colsC, "Inconsistent outer dimensions in CSR product");
+  // if (swapOperands) { // make rowsX actual row dimensions again, likewise colsX
+    // std::swap(rowsC, colsC);
+    // std::swap(rowsD, colsD);
+    // std::swap(rowsS, colsS);
+  // }
+  // // sparse arrays
+  // auto numOffsets = S_offsets->shape().elements() - 1; // -1 since last value is length
+  // ABORT_IF(numOffsets != rowsS, "Unexpected number of rows in CSR argument"); numOffsets;
+  // ABORT_IF(S_values->shape() != S_indices->shape(), "CSR values and indices must have the same size");
+  // if (!transS && !swapOperands) {
+    // // C = S * D, where D = CSR matrix
+    // const auto* offsets = S_offsets->data<IndexType>();
+    // const auto* indices = S_indices->data<IndexType>();
+    // const auto* values  = S_values->data<float>();
+    // const auto* dataD   = D->data<float>();
+    // auto*       dataC   = C->data<float>();
+    // ABORT_IF(beta != 0 && beta != 1, "cpu::CSRProd only supports beta = 0 or 1");
+    // for (size_t i = 0; i < rowsC; i++) {
+      // auto add = (beta == 1); // first element: overwrite or add according to beta; subsequent elements: add
+      // for (size_t kk = offsets[i]; kk < offsets[i + 1]; kk++) {
+        // auto k = indices[kk];    // fetch the non-zero row
+        // auto valS = values[kk]; // and the value from that row
+        // // This code is written with the hope for good vectorization, and the hope
+        // // that adding to memory will be done efficiently by the caching system.
+        // if (valS == 1)
+          // if (!add)
+            // for (size_t j = 0; j < colsC; j++)
+              // dataC[i * colsC[>==colsD*/ + j] = dataD[k * colsC/*==colsD<] + j]; // this is a memcpy()
+          // else
+            // for (size_t j = 0; j < colsC; j++)
+              // dataC[i * colsC[>==colsD*/ + j] += dataD[k * colsC/*==colsD<] + j]; // this is a contiguous-vector addition
+        // else
+          // if (!add)
+            // for (size_t j = 0; j < colsC; j++)
+              // dataC[i * colsC[>==colsD*/ + j] = valS * dataD[k * colsC/*==colsD<] + j];
+          // else
+            // for (size_t j = 0; j < colsC; j++)
+              // dataC[i * colsC[>==colsD*/ + j] += valS * dataD[k * colsC/*==colsD<] + j]; // notice the +=
+        // add = true; // next iteration will add to existing result
+      // }
+    // }
+  // }
+  // else
+    // ABORT("CSRProd for transS={}, swapOperands={} is not yet implemented for CPU", transS, swapOperands);
+// }
 
 }  // namespace cpu
 }  // namespace marian

@@ -152,11 +152,13 @@ Ptr<NodeInitializer> fromVector(std::vector<T>&& v) {
 
 template Ptr<NodeInitializer> fromVector<float16>(const std::vector<float16>& v);
 template Ptr<NodeInitializer> fromVector<float>(const std::vector<float>& v);
+template Ptr<NodeInitializer> fromVector<int>    (const std::vector<int>& v);
 template Ptr<NodeInitializer> fromVector<IndexType>(const std::vector<IndexType>& v);
 
 // @TODO: can we remove the const& ones above? They always make a copy anyways, and often from a temp
 template Ptr<NodeInitializer> fromVector<float16>  (std::vector<float16>  && v);
 template Ptr<NodeInitializer> fromVector<float>    (std::vector<float>    && v);
+template Ptr<NodeInitializer> fromVector<int>    (std::vector<int>    && v);
 template Ptr<NodeInitializer> fromVector<IndexType>(std::vector<IndexType>&& v);
 
 Ptr<NodeInitializer> fromSparseVector(std::pair<std::vector<size_t>, std::vector<float>>& v) {

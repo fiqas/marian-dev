@@ -152,6 +152,8 @@ Expr affine(Expr a,
 Expr csr_dot(const Shape& A_shape, Expr Avalues, Expr Aindices, Expr Aoffsets, Expr B, bool transA = false);
 Expr dot_csr(Expr A, const Shape& B_shape, Expr B_values, Expr B_indices, Expr B_offsets, bool transB = false);
 
+Expr mkl_csr_dot(const Shape& A_shape, Expr Avalues, Expr Acolumns, Expr ApointerB, Expr ApointerE, Expr B, bool transA = false);
+
 Expr transpose(Expr a);
 Expr transpose(Expr a, const std::vector<int>& axes);
 

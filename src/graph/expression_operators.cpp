@@ -608,6 +608,11 @@ Expr dot_csr(Expr A, const Shape& B_shape, Expr B_values, Expr B_indices, Expr B
   return Expression<CSRDotNodeOp>(B_shape, B_values, B_indices, B_offsets, A, transB, /*swapOperands=*/true);
 }
 
+Expr mkl_csr_dot(const Shape& A_shape, Expr A_values, Expr A_columns, Expr A_pointerB, Expr A_pointerE, Expr B, bool transA /*= false*/) {
+  return Expression<MKLCSRDotNodeOp>(A_shape, A_values, A_columns, A_pointerB, A_pointerE, B, transA);
+}
+
+
 // swap the last two axes
 // @TODO: change to swapAxes(a, -1, -2)
 Expr transpose(Expr a) {

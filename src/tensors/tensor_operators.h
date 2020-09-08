@@ -102,6 +102,7 @@ void Reduce(Functor functor, AggFunctor aggFunctor, float aggInit,
 DISPATCH7(Prod, marian::Tensor, const marian::Tensor&, const marian::Tensor&, bool, bool, float, float)
 DISPATCH8(ProdBatched, marian::Tensor, Ptr<Allocator>, const marian::Tensor, const marian::Tensor, bool, bool, float, float)
 DISPATCH9(CSRProd, marian::Tensor, Ptr<Allocator>, const marian::Tensor&, const marian::Tensor&, const marian::Tensor&, const marian::Tensor&, bool, bool, float)
+DISPATCH9(MKLCSRProd, marian::Tensor, Ptr<Allocator>, const marian::Tensor&, const marian::Tensor&, const marian::Tensor&, const marian::Tensor&, const marian::Tensor&, bool, float)
 
 DISPATCH2(Softmax, marian::Tensor, marian::Tensor)
 DISPATCH3(SoftmaxGrad, marian::Tensor, marian::Tensor, marian::Tensor)

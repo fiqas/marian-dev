@@ -533,6 +533,89 @@ public:
   const std::string color() override { return "orange"; }
 };
 
+class MKLCSRDotNodeOp : public NaryNodeOp {
+  bool transS_;
+  bool swapOperands_ = false;
+public:
+  MKLCSRDotNodeOp(const Shape& S_shape, Expr S_values, Expr S_columns,
+               Expr S_pointerB, Expr S_pointerE, Expr D, bool transS)
+    : NaryNodeOp({ S_values, S_columns, S_pointerB, S_pointerE, D },
+                 newShape(S_shape, S_values, S_columns, S_pointerB, S_pointerE, D, transS),
+                 NaryNodeOp::commonType({S_values, D})),
+      transS_(transS) {
+    matchOrAbort<int>(S_columns->value_type());
+    matchOrAbort<int>(S_pointerB->value_type());
+    matchOrAbort<int>(S_pointerE->value_type());
+  }
+
+  Shape newShape(const Shape& S_shape, Expr S_values, Expr S_columns, Expr S_pointerB, Expr S_pointerE, Expr D, bool transS) {
+    bool swapOperands = false;
+    ABORT_IF(S_values->shape().size() != 1 || S_columns->shape().size() != 1 || S_pointerB->shape().size() != 1 || S_pointerE->shape().size() != 1,
+        "Sparse matrix components must all be vectors");
+    ABORT_IF(S_values->shape() != S_columns->shape(),
+        "Sparse matrix values and indices must have the same shape");
+    ABORT_IF(S_shape.size() != 2,
+        "Sparse matrix must have rank 2");
+    ABORT_IF(S_pointerB->shape()[0] != S_shape[0],
+        "Sparse matrix pointerB vector has incorrect size");
+    ABORT_IF(S_pointerE->shape()[0] != S_shape[0],
+        "Sparse matrix pointerE vector has incorrect size");
+    auto outShape = D->shape();
+    ABORT_IF(S_shape[transS == swapOperands ? 1 : 0] != outShape[-(int)swapOperands],
+             "Matrix product requires inner dimensions to match");
+    outShape.set(-(int)swapOperands, S_shape[transS != swapOperands]);
+    return outShape;
+  }
+
+  NodeOps forwardOps() override {
+    return { NodeOp(MKLCSRProd(val_,
+                               graph()->allocator(),
+                               child(0)->val(), child(1)->val(), child(2)->val(), child(3)->val(),
+                               child(4)->val(),
+                               /*transS=*/transS_, /*beta=*/0))};
+  }
+
+  NodeOps backwardOps() override {
+    return { nullptr, // can't backprop into the sparse matrix (the gradient is dense)
+             nullptr,
+             nullptr,
+             NodeOp(MKLCSRProd(child(4)->grad(), // child(4) = D
+                            graph()->allocator(),
+                            child(0)->val(), child(1)->val(), child(2)->val(), child(3)->val(), // children(0..3) = A
+                            adj_,
+                            /*transS=*/!transS_, /*beta=*/1))};
+  }
+
+  const std::string type() override { return "mklcsr_dot"; }
+
+  virtual size_t hash() override {
+    size_t seed = NaryNodeOp::hash();
+    for(auto s : shape())
+      util::hash_combine(seed, s);
+    util::hash_combine(seed, transS_);
+    util::hash_combine(seed, swapOperands_);
+    return seed;
+  }
+
+  virtual bool equal(Expr node) override {
+    if(!NaryNodeOp::equal(node))
+      return false;
+    auto cnode = std::dynamic_pointer_cast<MKLCSRDotNodeOp>(node);
+    if(!cnode)
+      return false;
+    if(transS_ != cnode->transS_)
+      return false;
+    if(shape() != cnode->shape())
+      return false;
+    if(swapOperands_ != cnode->swapOperands_)
+      return false;
+    return true;
+  }
+
+  const std::string color() override { return "orange"; }
+};
+
+
 // Note: To reduce code duplication, we use the same NodeOp for C = op(S) x D and C = D x op(S).
 // Set swapOperands to select the latter.
 class CSRDotNodeOp : public NaryNodeOp {

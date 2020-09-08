@@ -39,6 +39,7 @@ add_library(marian STATIC
   data/text_input.cpp
 
   3rd_party/cnpy/cnpy.cpp
+  3rd_party/cnpy_org/cnpy.cpp
   3rd_party/ExceptionWithCallStack.cpp
   3rd_party/onnx/protobuf/onnx-ml.pb-wrapper.cpp
 

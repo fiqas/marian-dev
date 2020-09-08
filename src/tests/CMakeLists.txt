@@ -1,4 +1,5 @@
 # Unit tests
+cmake_minimum_required(VERSION 3.5)
 add_subdirectory(units)
 
 if(NOT MSVC)
@@ -8,6 +9,7 @@ if(NOT MSVC)
       dropout
       sqlite
       prod
+      csr_prod
       cli
       pooling
   )

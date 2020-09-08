@@ -3,6 +3,7 @@
 #include "common/logging.h"
 #include "common/shape.h"
 #include "common/intrusive_ptr.h"
+#include <mkl.h>
 
 #include <functional>
 #include <iostream>
@@ -83,6 +84,7 @@ namespace marian {
 // size_t would seem to be the natural choice over uint32_t but has usually 8 bytes
 // while uint32_t has 4 bytes. This type will be often exchanged between CPU and GPU.
 // This minimizes bandwith at little cost.
+// typedef MKL_INT IndexType;
 typedef uint32_t IndexType;
 
 // @TODO: come up with better short name. "I..." stands for interface now. Here it stands
