@@ -23,7 +23,8 @@ int main(int argc, char** argv) {
         "  ./marian-conv -f model.npz -t model.bin --gemm-type packed16");
     cli->add<std::string>("--from,-f", "Input model", "model.npz");
     cli->add<std::string>("--to,-t", "Output model", "model.bin");
-    cli->add<std::string>("--export-as", "Kind of conversion: marian-bin or onnx-{encode,decoder-step,decoder-init,decoder-stop}", "marian-bin");
+    cli->add<std::string>("--export-as", "Kind of conversion: marian-bin or onnx", "marian-bin");
+    cli->add<bool>("--onnx-shortlist", "Export ONNX graph with shortlisting", false);
     cli->add<std::string>("--gemm-type,-g", "GEMM Type to be used: float32, packed16, packed8avx2, packed8avx512", "float32");
     cli->add<std::vector<std::string>>("--vocabs,-V", "Vocabulary file, required for ONNX export");
     cli->parse(argc, argv);
@@ -70,15 +71,15 @@ int main(int argc, char** argv) {
     // added a flag if the weights needs to be packed or not
     graph->packAndSave(modelTo, configStr.str(), /* --gemm-type */ saveGemmType, Type::float32);
   }
-  else if (exportAs == "onnx-encode") {
+  else if (exportAs == "onnx") {
 #ifdef USE_ONNX
     auto graph = New<ExpressionGraphONNXExporter>();
     load(graph);
     auto modelOptions = New<Options>(config)->with("vocabs", vocabPaths, "inference", true);
-
-    graph->exportToONNX(modelTo, modelOptions, vocabPaths);
+    auto shortlistFlag = options->get<bool>("onnx-shortlist");
+    graph->exportToONNX(modelTo, modelOptions, vocabPaths, shortlistFlag);
 #else
-    ABORT("--export-as onnx-encode requires Marian to be built with USE_ONNX=ON");
+    ABORT("--export-as onnx requires Marian to be built with USE_ONNX=ON");
 #endif // USE_ONNX
   }
   else

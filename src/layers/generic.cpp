@@ -281,10 +281,21 @@ namespace marian {
         }
       };
 
+      // std::cout << "Shortlist: " << std::endl;
+      // for(auto i: shortlist_->indices())
+        // std::cout << i << ", ";
+      // std::cout << std::endl;
+
+      // if (shortlist_ && !cachedShortWt_) { // shortlisted versions of parameters are cached within one batch, then clear()ed
+        // cachedShortWt_  = index_select(Wt_, isLegacyUntransposedW ? -1 : 0, shortlist_->indices());
+        // if(hasBias_)
+          // cachedShortb_ = index_select(b_ ,                             -1, shortlist_->indices());
+      // }
+      
       if (shortlist_ && !cachedShortWt_) { // shortlisted versions of parameters are cached within one batch, then clear()ed
-        cachedShortWt_  = index_select(Wt_, isLegacyUntransposedW ? -1 : 0, shortlist_->indices());
+        cachedShortWt_  = index_select(Wt_, isLegacyUntransposedW ? -1 : 0, shortlist_->node(graph_));
         if(hasBias_)
-          cachedShortb_ = index_select(b_ ,                             -1, shortlist_->indices());
+          cachedShortb_ = index_select(b_ ,                             -1, shortlist_->node(graph_));
       }
 
       if (factoredVocab_) {

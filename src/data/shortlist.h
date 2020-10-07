@@ -19,10 +19,20 @@ namespace data {
 class Shortlist {
 private:
   std::vector<WordIndex> indices_;    // // [packed shortlist index] -> word index, used to select columns from output embeddings
+  Expr node_;    // // [A node version of indices_, cached so that the constant node is not recreated multiple times]
 
 public:
   Shortlist(const std::vector<WordIndex>& indices)
     : indices_(indices) {}
+
+  Expr node(Ptr<ExpressionGraph> graph) { 
+    if (!node_) { 
+      node_ = graph->indices(indices_);
+      node_->set_name("shortlist");
+    }
+    return node_; 
+  
+  }
 
   const std::vector<WordIndex>& indices() const { return indices_; }
   WordIndex reverseMap(int idx) { return indices_[idx]; }

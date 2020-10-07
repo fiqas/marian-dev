@@ -6,14 +6,14 @@ namespace marian {
 #ifdef USE_ONNX
     public:
     // export a seq2seq model to a set of ONNX files
-    void exportToONNX(const std::string& modelToPrefix, Ptr<Options> modelOptions, const std::vector<std::string>& vocabPaths);
+    void exportToONNX(const std::string& modelToPrefix, Ptr<Options> modelOptions, const std::vector<std::string>& vocabPaths, const bool shortlistFlag);
 
   private:
     // [name] -> (vector(name, Expr), vector(name, Expr))
     typedef std::map<std::string, std::pair<std::vector<std::pair<std::string, Expr>>, std::vector<std::pair<std::string, Expr>> >> FunctionDefs;
 
     // serialize the current nodesForward_ to an ONNX file. This operation is destructive.
-    void serializeToONNX(const std::string& filename, FunctionDefs&& functionDefs, size_t sentinelDim);
+    void serializeToONNX(const std::string& filename, FunctionDefs&& functionDefs, size_t sentinelDim, size_t shortlistDim);
 
     // find a node on the current forward tape
     Expr tryFindForwardNodeByName(const std::string& nodeName) const;

@@ -491,9 +491,10 @@ namespace marian {
   using namespace onnx; // all -Proto classes come from here
 
   const std::string LENGTH_AXIS_NAME = "SOURCE_LENGTH";  // the source length is a named (dynamic) axis with this name
+  const std::string SHORTLIST_AXIS_NAME = "SHORTLIST_LENGTH";  // the shortlist length is a named (dynamic) axis with this name
 
   // C++ port of a subset of https://github.com/onnx/onnx/blob/master/onnx/helper.py
-  static ValueInfoProto makeValueInfoProto(std::string name, TensorProto_DataType dataType, std::vector<size_t> shape, size_t sentinelDim) {
+  static ValueInfoProto makeValueInfoProto(std::string name, TensorProto_DataType dataType, std::vector<size_t> shape, size_t sentinelDim, size_t shortlistDim) {
     ValueInfoProto valueInfo;
     valueInfo.set_name(name);
     auto* valueInfoType = valueInfo.mutable_type();
@@ -503,6 +504,8 @@ namespace marian {
     for (auto dim : shape)
       if (dim == sentinelDim)
         valueInfoTensorTypeShape->add_dim()->set_dim_param(LENGTH_AXIS_NAME);
+      else if (dim == shortlistDim)
+        valueInfoTensorTypeShape->add_dim()->set_dim_param(SHORTLIST_AXIS_NAME);
       else
         valueInfoTensorTypeShape->add_dim()->set_dim_value(dim);
     return valueInfo;
@@ -653,7 +656,9 @@ namespace marian {
       {"sliceView"              , "Slice"},
       {"shift"                  , "Pad"},
       {"rows"                   , "Gather"},
-      {"select"                 , "Gather"},
+      {"cols"                   , "Gather"},
+      // {"select"                 , "Gather"},
+      {"gather"                 , "Gather"},
       // The following are never emitted to ONNX. Keep our original type names to avoid special-casing lots of code.
       {"const"                  , "const"},
       {"param"                  , "param"}
@@ -721,7 +726,7 @@ namespace marian {
     }
   }
 
-  static void logNode(const NodeProto& node, const std::vector<size_t>& shape, size_t sentinelDim) {
+  static void logNode(const NodeProto& node, const std::vector<size_t>& shape, size_t sentinelDim, size_t shortlistDim) {
     std::string s = node.name() + " = " + node.op_type() + "(";
     auto addComma = [&]() { if (s.back() != '(' && s.back() != '[') s += ", "; };
     for (int i = 0; i < node.input_size(); i++) {
@@ -739,6 +744,8 @@ namespace marian {
       addComma();
       if (dim == sentinelDim)
           s += LENGTH_AXIS_NAME;
+      else if (dim == shortlistDim)
+          s += SHORTLIST_AXIS_NAME;
       else
           s += std::to_string(dim);
     }
@@ -752,7 +759,8 @@ namespace marian {
   static void addExprNode(Expr expr, std::vector<NodeProto>& nodes, std::vector<ValueInfoProto>& inputs,
                           std::vector<TensorProto>& initializers,
                           const std::map<Expr, std::string>& nameOverrides, const InputsMap& inputsMap,
-                          size_t sentinelDim) {
+                          size_t sentinelDim,
+			  size_t shortlistDim) {
     // get all children
     // These may reference inputs, and hence must be mapped right here.
     // The original child in this case is not on the tape.
@@ -762,8 +770,12 @@ namespace marian {
 
     // inputs are referenced by their node names (also when they are leaves)
     std::vector<std::string> inputNames;
-    for (const auto& child : children)
-      inputNames.push_back(getExprName(child, nameOverrides));
+    for (const auto& child : children) {
+      auto childName = getExprName(child, nameOverrides);
+      // LOG(info, "Child name {}", childName);
+      inputNames.push_back(childName);
+    }
+    // LOG(info, "NODE {}", expr->type());
 
     auto name = getExprName(expr, nameOverrides); // node name is used as both output name and node name
     auto op = mapExprOp(expr);
@@ -797,7 +809,7 @@ namespace marian {
       for (auto& dim : shape)
         n *= dim;
       std::vector<float> zeros(n);
-      inputs.      push_back(makeValueInfoProto(paddingName, TensorProto_DataType::TensorProto_DataType_FLOAT, shape, sentinelDim));
+      inputs.      push_back(makeValueInfoProto(paddingName, TensorProto_DataType::TensorProto_DataType_FLOAT, shape, sentinelDim, shortlistDim));
       initializers.push_back(makeTensorProto   (paddingName, TensorProto_DataType::TensorProto_DataType_FLOAT, shape, zeros));
       LOG(info, "Pad constant {}", paddingName);
       // Concat([paddingNode, sliceNode], axis=0)
@@ -810,7 +822,6 @@ namespace marian {
 #endif
 
     auto node = makeNode(op, name, inputNames, {name});
-    //LOG(info, "NODE {} {} -> {}", name, expr->type(), E::mapExprOp(expr));
 
     // add attributes needed by some operators
 
@@ -821,11 +832,14 @@ namespace marian {
       // create a new input and a new initializer
       auto shape = getExprShape(expr);
       auto shape64 = std::vector<int64_t>(shape.begin(), shape.end());
-      for (auto& dim : shape64)
+      for (auto& dim : shape64) {
         if (dim == (int64_t)sentinelDim)
           dim = -1;  // means that this one is inferred at runtime
+        if (dim == (int64_t)shortlistDim)
+          dim = -1;  // means that this one is inferred at runtime
+      }
       std::vector<size_t> shapeShape{shape.size()}; // ONNX Reshape requires shape in INT64
-      inputs.      push_back(makeValueInfoProto(shapeInputName, TensorProto_DataType::TensorProto_DataType_INT64, shapeShape, sentinelDim));
+      inputs.      push_back(makeValueInfoProto(shapeInputName, TensorProto_DataType::TensorProto_DataType_INT64, shapeShape, sentinelDim, shortlistDim));
       initializers.push_back(makeTensorProto   (shapeInputName, TensorProto_DataType::TensorProto_DataType_INT64, shapeShape, shape64));
       std::string s = shapeInputName;
       for (auto& dim : shape64)
@@ -859,6 +873,10 @@ namespace marian {
       //  output = [  [1.0, 1.2], [2.3, 3.4], [2.3, 3.4], [4.5, 5.7], ] 
       ABORT_IF(expr->shape().size() != 2, "Unexpected input shape for rows()");
       addAttribute(node, "axis", 0);
+    }
+    else if (expr->type() == "cols") { // becomes Gather
+      ABORT_IF(expr->shape().size() != 2, "Unexpected input shape for cols()");
+      addAttribute(node, "axis", -1);
     }
     // slice attributes (starts, ends)
     Slice slice;
@@ -935,7 +953,7 @@ namespace marian {
   // @TODO: How to handle guided alignment? That's another input. Name? Shape?
   // This is based on the simple example in
   // https://github.com/onnx/onnx/blob/master/onnx/examples/make_model.ipynb
-  void ExpressionGraphONNXExporter::serializeToONNX(const std::string& fileRoot, FunctionDefs&& functionDefs, size_t sentinelDim) {
+  void ExpressionGraphONNXExporter::serializeToONNX(const std::string& fileRoot, FunctionDefs&& functionDefs, size_t sentinelDim, size_t shortlistDim) {
     GOOGLE_PROTOBUF_VERIFY_VERSION;
 
     // @TODO: expansion must deal with multiple sub-tapes (encoder, init)
@@ -963,14 +981,17 @@ namespace marian {
       // Also, we collect the nameOverrides for all input and output nodes.
       InputsMap inputsMap;
       for (auto& inputDef : inputDefs) {
+	LOG(info, "Input: {}", inputDef.first);
         const auto& input = inputDef.second;
         ABORT_IF(inputsMap.find(input) != inputsMap.end(), "Duplicate inputDef expr??");
         auto arg = constant(input->shape(), inits::zeros(), input->value_type());
         inputsMap[input] = arg;
         nameOverrides[arg] = inputDef.first;
       }
-      for (const auto& outputDef : outputDefs)
+      for (const auto& outputDef : outputDefs) {
+	  LOG(info, "Output: {}", outputDef.first);
           nameOverrides[inputsMap(outputDef.second)] = outputDef.first;
+      }
 
       // regenerate nodesForward_ from the roots, only for the function under consideration
       // This redirects all items in inputsMap in the graph and in outputDefs as well.
@@ -993,21 +1014,24 @@ namespace marian {
 
       // sanity check: did we consume all expected inputs?
       std::set<Expr> mappedInputSet;  // set of replacement Exprs (those constants) for inputs
-      for (auto ee : inputsMap)
+      for (auto ee : inputsMap) {
+        // LOG(info, "inputsMap.first {} {}", ee.first->name(), ee.first->type());	
+        // LOG(info, "inputsMap.second {} {}", ee.second->name(), ee.second->type());	
         mappedInputSet.insert(ee.second);
+      }
       std::set<Expr> seenMappedInputs;
       for (const auto& expr : nodesForward_) {
         ABORT_IF(inputsMap.find(expr) != inputsMap.end(), "An input node (id={}) was not mapped??", expr->getId());
         if (mappedInputSet.find(expr) != mappedInputSet.end())
           seenMappedInputs.insert(expr);
       }
-      for (auto e : mappedInputSet)
+      for (auto e : mappedInputSet) {
         if (seenMappedInputs.find(e) == seenMappedInputs.end()) {
           LOG(info, "WARNING: Input {} not consumed in input graph", nameOverrides[e]);
           nodesForward_.push_back(e);
         }
-        //ABORT_IF(seenMappedInputs.find(e) == seenMappedInputs.end(), "Input node {} not found in input graph??", nameOverrides[e]);
-
+	// ABORT_IF(seenMappedInputs.find(e) == seenMappedInputs.end(), "Input node {} not found in input graph??", nameOverrides[e]);
+      }
       // output set -- these nodes are exported differently
       std::set<Expr> outputsSet;
       for (const auto& outputDef : outputDefs)
@@ -1024,15 +1048,17 @@ namespace marian {
         //LOG(info, "exporting node name {} op {} ({})", getExprName(expr), E::mapExprOp(expr), expr->children().size());
         if (expr->type() == "param" ||
             (expr->type() == "const" && expr->name().find("opRandomUniform_") != 0)) { // leaves are not nodes in ONNX (except for the uniform placeholder @HACKHACK 2)
-          //LOG(info, "exporting leaf name {} op {} ({})", getExprName(expr), E::mapExprOp(expr), expr->children().size());
+	  LOG(info, "Exporting leaf name {} op {} ({}) id {}", getExprName(expr, nameOverrides), mapExprOp(expr), expr->children().size(), expr->getId());
           auto shape = getExprShape(expr);
-          inputsParamsAndConstants.push_back(makeValueInfoProto(getExprName(expr, nameOverrides), getExprDataType(expr), shape, sentinelDim));
+          inputsParamsAndConstants.push_back(makeValueInfoProto(getExprName(expr, nameOverrides), getExprDataType(expr), shape, sentinelDim, shortlistDim));
           // don't create an initializers entry for inputs
+	  
+
           if (std::any_of(inputsMap.begin(), inputsMap.end(), [&](const std::pair<Expr, Expr>& inputMap) {
                 return inputMap.second == expr;
               })) { // skip designated inputs
             ABORT_IF(expr->type() != "const", "Data inputs must be 'const' nodes");
-            //LOG(info, "No initializer for data-input node {}", getExprName(expr));
+	    LOG(info, "No initializer for data-input node {}", getExprName(expr, nameOverrides));
             continue;
           }
           // run initializers, to realize value of consts (params already got theirs)
@@ -1043,10 +1069,10 @@ namespace marian {
           initializers.push_back(makeExprTensorProto(expr, nameOverrides));
           continue;      // parameters must become initializers, name=input name
         }
-        addExprNode(expr, nodes, inputsParamsAndConstants, initializers, nameOverrides, inputsMap, sentinelDim);
-        logNode(nodes.back(), getExprShape(expr), sentinelDim);
+        addExprNode(expr, nodes, inputsParamsAndConstants, initializers, nameOverrides, inputsMap, sentinelDim, shortlistDim);
+        logNode(nodes.back(), getExprShape(expr), sentinelDim, shortlistDim);
 
-        auto valueInfo = makeValueInfoProto(nodes.back().name(), getExprDataType(expr), getExprShape(expr), sentinelDim);
+        auto valueInfo = makeValueInfoProto(nodes.back().name(), getExprDataType(expr), getExprShape(expr), sentinelDim, shortlistDim);
         if (outputsSet.find(expr) != outputsSet.end())
           outputs.push_back(valueInfo);
         //else // we add expected-shape information, to more easily be able to track down where it may fail

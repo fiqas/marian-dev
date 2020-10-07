@@ -44,7 +44,7 @@ def main():
                 print(model[args.key])
         else:
             for key in model:
-                print(key)
+                print(key, model[key].shape)
 
 
 def parse_args():
