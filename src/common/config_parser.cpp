@@ -255,6 +255,12 @@ void ConfigParser::addOptionsModel(cli::CLIWrapper& cli) {
   cli.add<int>("--transformer-dim-ffn",
       "Size of position-wise feed-forward network (transformer)",
       2048);
+  cli.add<std::vector<int>>("--transformer-dim-enc-selected-ffn",
+      "Sizes of feed-forward network in encoder (sliced beforehand) (transformer)",
+      {1536, 1536, 1536, 1536, 1536, 1536});
+  cli.add<std::vector<int>>("--transformer-dim-dec-selected-ffn",
+      "Sizes of feed-forward network in decoder (sliced beforehand) (transformer)",
+      {1536, 1536, 1536, 1536, 1536, 1536});
   cli.add<int>("--transformer-ffn-depth",
       "Depth of filters (transformer)",
       2);

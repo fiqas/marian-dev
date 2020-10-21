@@ -444,6 +444,31 @@ Expr denseInline(Expr x, std::string prefix, std::string suffix, int outDim, con
   return x;
 }
 
+// denseInline but with pruned parameters
+static inline
+Expr denseSelectedInline(Expr x, std::string prefix, std::string suffix, int outDim, const std::function<Expr(Expr)>& actFn = nullptr, float dropProb = 0.0f)
+{
+  auto graph = x->graph();
+
+  Expr W, b;
+  W = graph->param(prefix + "_W" + suffix + "_selected", { x->shape()[-1], outDim }, inits::glorotUniform());
+  if (suffix == "1") {
+    b = graph->param(prefix + "_b" + suffix + "_selected", { 1,              outDim }, inits::zeros());
+  }
+  else { 
+    b = graph->param(prefix + "_b" + suffix, { 1,              outDim }, inits::zeros());
+  }
+
+  // auto W = graph->param(prefix + "_W" + suffix, { x->shape()[-1], outDim }, inits::glorotUniform());
+  // auto b = graph->param(prefix + "_b" + suffix, { 1,              outDim }, inits::zeros());
+
+  x = affine(x, W, b);
+  if (actFn)
+    x = actFn(x);
+  x = dropout(x, dropProb);
+  return x;
+}
+
 static inline
 Expr layerNorm(Expr x, std::string prefix, std::string suffix = std::string()) {
   int dimModel = x->shape()[-1];

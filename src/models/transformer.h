@@ -404,14 +404,29 @@ public:
     ABORT("Invalid activation name '{}'", actName);
   }
 
-  Expr LayerFFN(std::string prefix, Expr input) const {
+  Expr LayerFFN(std::string prefix, Expr input, int layerNum = 0) const {
     int dimModel = input->shape()[-1];
 
     float dropProb = inference_ ? 0 : opt<float>("transformer-dropout");
     auto opsPre = opt<std::string>("transformer-preprocess");
     auto output = preProcess(prefix + "_ffn", opsPre, input, dropProb);
 
-    int dimFfn = opt<int>("transformer-dim-ffn");
+    // int dimFfn = opt<int>("transformer-dim-ffn");
+
+    int dimFfn;
+    if (prefix.find("encoder") != std::string::npos) {
+      LOG(info, "Inside encoder LayerFFN {} {}", prefix, layerNum  - 1);
+      dimFfn = opt<std::vector<int>>("transformer-dim-enc-selected-ffn")[layerNum - 1];
+    }
+    else if (prefix.find("decoder") != std::string::npos) {
+      LOG(info, "Inside decoder LayerFFN {} {}", prefix, layerNum - 1);
+      dimFfn = opt<std::vector<int>>("transformer-dim-dec-selected-ffn")[layerNum - 1];
+    }
+    else {
+      dimFfn = opt<int>("transformer-dim-ffn"); // won't enter it but just in case, change to use it as default later
+    }
+
+
     int depthFfn = opt<int>("transformer-ffn-depth");
     auto actFn = activationByName(opt<std::string>("transformer-ffn-activation"));
     float ffnDropProb
@@ -420,9 +435,13 @@ public:
     ABORT_IF(depthFfn < 1, "Filter depth {} is smaller than 1", depthFfn);
 
     // the stack of FF layers
+    //for(int i = 1; i < depthFfn; ++i)
+      //output = denseInline(output, prefix, /*suffix=*/std::to_string(i), dimFfn, actFn, ffnDropProb);
+    //output = denseInline(output, prefix, /*suffix=*/std::to_string(depthFfn), dimModel);
+    
     for(int i = 1; i < depthFfn; ++i)
-      output = denseInline(output, prefix, /*suffix=*/std::to_string(i), dimFfn, actFn, ffnDropProb);
-    output = denseInline(output, prefix, /*suffix=*/std::to_string(depthFfn), dimModel);
+      output = denseSelectedInline(output, prefix, /*suffix=*/std::to_string(i), dimFfn, actFn, ffnDropProb);
+    output = denseSelectedInline(output, prefix, /*suffix=*/std::to_string(depthFfn), dimModel);
 
     auto opsPost = opt<std::string>("transformer-postprocess");
     output
@@ -578,7 +597,7 @@ public:
                              layer, // values
                              layerMask, // [batch size, num heads broadcast=1, max length broadcast=1, max length]
                              opt<int>("transformer-heads"));
-      layer = LayerFFN(prefix_ + "_l" + std::to_string(i) + "_ffn", layer);
+      layer = LayerFFN(prefix_ + "_l" + std::to_string(i) + "_ffn", layer, i);
       checkpoint(layer); // sets a manually specified checkpoint if gradient checkpointing is enabled, does nothing otherwise.
     }
 
@@ -846,7 +865,7 @@ public:
       // remember decoder state
       decoderStates.push_back(decoderState);
 
-      query = LayerFFN(prefix_ + "_l" + layerNo + "_ffn", query); // [-4: beam depth=1, -3: batch size, -2: max length, -1: vector dim]
+      query = LayerFFN(prefix_ + "_l" + layerNo + "_ffn", query, tiedLayers[i]); // [-4: beam depth=1, -3: batch size, -2: max length, -1: vector dim]
 
       checkpoint(query);
     }
