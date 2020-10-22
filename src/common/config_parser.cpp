@@ -241,17 +241,35 @@ void ConfigParser::addOptionsModel(cli::CLIWrapper& cli) {
       "Tie source and target embeddings");
   cli.add<bool>("--tied-embeddings-all",
       "Tie all embedding layers and output layer");
-  cli.add<bool>("--output-omit-bias",
-      "Do not use a bias vector in decoder output layer");
-  
+
   // Transformer options
   cli.add<int>("--transformer-heads",
       "Number of heads in multi-head attention (transformer)",
       8);
+  cli.add<int>("--transformer-head-dim",
+      "Dimension heads in multi-head attention (transformer)",
+      64);
+  cli.add<bool>("--block-sparse-ffn",
+      "Apply a block-sparse mask to FFN layers (from npz model)");
+  cli.add<bool>("--block-sparse-emb",
+      "Apply a block-sparse mask to embeddings (from npz model)");
+  cli.add<bool>("--transformer-head-file",
+      "Load number of heads from model.npz.{decoder,encoder}_pruning.yml");
+  cli.add<std::vector<int>>("--transformer-encoder-heads",
+      "Number of heads in encoder self-attention (transformer)",
+      {8, 8, 8, 8, 8, 8});
+  cli.add<std::vector<int>>("--transformer-decoder-heads",
+      "Number of heads in decoder self-attention (transformer)",
+      {8, 8, 8, 8, 8, 8});
+  cli.add<std::vector<int>>("--transformer-context-heads",
+      "Number of heads in encoder-decoder context attention (transformer)",
+      {8, 8, 8, 8, 8, 8});
+  cli.add<bool>("--transformer-head-print",
+      "Print statistics in multi-head attention (transformer), for lottery ticket pruning.");
+  cli.add<bool>("--transformer-tied-ffn",
+      "Tie FFN layers in an encoder");
   cli.add<bool>("--transformer-no-projection",
       "Omit linear projection after multi-head attention (transformer)");
-  cli.add<bool>("--transformer-pool",
-      "Pool encoder states instead of using cross attention (selects first encoder state, best used with special token)");
   cli.add<int>("--transformer-dim-ffn",
       "Size of position-wise feed-forward network (transformer)",
       2048);
@@ -344,6 +362,12 @@ void ConfigParser::addOptionsModel(cli::CLIWrapper& cli) {
         "Dropout for transformer attention (0 = no dropout)");
     cli.add<float>("--transformer-dropout-ffn",
         "Dropout for transformer filter (0 = no dropout)");
+    cli.add<float>("--group-lasso-regulariser",
+        "Apply group lasso regularisation in layers (transformer)", 0.0f);
+    cli.add<std::string>("--group-lasso-regulariser-type",
+        "Apply group lasso regularisation to specific layers (transformer), f = ffn, h = heads,, k/v/q/o = attention matrices, e = enc, d = dec", "");
+    cli.add<std::string>("--group-lasso-regulariser-shape",
+        "Shape of regularised parameters, blocks or rowcol", "block");
   }
   cli.switchGroup(previous_group);
   // clang-format on
