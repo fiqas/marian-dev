@@ -415,11 +415,11 @@ public:
 
     int dimFfn;
     if (prefix.find("encoder") != std::string::npos) {
-      LOG(info, "Inside encoder LayerFFN {} {}", prefix, layerNum  - 1);
+      // LOG(info, "Inside encoder LayerFFN {} {}", prefix, layerNum  - 1);
       dimFfn = opt<std::vector<int>>("transformer-dim-enc-selected-ffn")[layerNum - 1];
     }
     else if (prefix.find("decoder") != std::string::npos) {
-      LOG(info, "Inside decoder LayerFFN {} {}", prefix, layerNum - 1);
+      // LOG(info, "Inside decoder LayerFFN {} {}", prefix, layerNum - 1);
       dimFfn = opt<std::vector<int>>("transformer-dim-dec-selected-ffn")[layerNum - 1];
     }
     else {
