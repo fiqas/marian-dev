@@ -329,7 +329,7 @@ public:
     return output;
   }
 
-  Expr calculateRegularisation(Expr W, std::string regShape, int block, bool rows = false) {
+  Expr calculateRegularisation(Expr W, Expr b, std::string regShape, int block, bool rows = false) {
   
     Expr W_cost;  
     if (regShape == "block") {
@@ -340,14 +340,23 @@ public:
       auto W_reshaped = reshape(W, {h / block, block, innerShape, block}); 
       auto W_transposed = transpose(W_reshaped, {0, 2, 1, 3});
       auto W_blocks = reshape(W_transposed, {1, blockNum, block, block});
-    
+      auto b_blocks = reshape(b, {b->shape()[1] / block, 1, block});
       // Calculate L2-regularisation
      
       auto W_pow = W_blocks * W_blocks;
       auto W_sum = sum(sum(W_pow, -2), -1);
+
+      if(!rows) {
+        auto b_pow = b_blocks * b_blocks;
+        auto b_sum = sum(b_pow, -1);
+        W_sum = W_sum + b_sum;	
+      }
+
       auto W_sqrt = sqrt(W_sum);
       W_cost = sum(W_sqrt, -3);
+      
     }
+ 
     else if (regShape == "rowcol") {
       size_t axis_l2, axis_l1;
       if (!rows) {
@@ -361,9 +370,15 @@ public:
   
       auto W_pow = W * W; 
       auto W_sum = sum(W_pow, axis_l2);
+
+      if (!rows) {
+        auto b_pow = b * b;
+        W_sum = W_sum + b_pow;	
+      }
+
       auto W_sqrt = sqrt(W_sum);
       W_cost = sum(W_sqrt, axis_l1);
-  
+
     }
     return W_cost;
   }
@@ -393,7 +408,7 @@ public:
 
     // Regularise Wq //
     if (regBool || regWq) {
-      auto Wq_cost = calculateRegularisation(Wq, regShape, 8);
+      auto Wq_cost = calculateRegularisation(Wq, bq, regShape, 8);
       // LOG(info, "PUSHING COST FOR WQ LAYER {}", prefix);
       regularisers_.push_back(Wq_cost);
       // stupid hack to connect to a graph, it gets the cost later but screams about more than 1 top node
@@ -416,11 +431,12 @@ public:
     }
     else {
       auto Wk = graph_->param(prefix + "_Wk", {dimModel, dimHeads * dimHeadSize}, inits::glorotUniform());
+      auto bk = graph_->param(prefix + "_bk", {1,        dimHeads * dimHeadSize}, inits::zeros());
     
       // Regularise Wk //
       if (regBool || regWk) {
         // LOG(info, "PUSHING COST FOR WK LAYER {}", prefix);
-        auto Wk_cost = calculateRegularisation(Wk, regShape, 8);
+        auto Wk_cost = calculateRegularisation(Wk, bk, regShape, 8);
         regularisers_.push_back(Wk_cost);
         // stupid hack to connect to a graph, it gets the cost later but screams about more than 1 top node
         auto ugh = Wk_cost / Wk_cost;
@@ -428,7 +444,6 @@ public:
       }
       //////////////////
 
-      auto bk = graph_->param(prefix + "_bk", {1,        dimHeads * dimHeadSize}, inits::zeros());
 
       kh = affine(keys, Wk, bk);     // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
       kh = SplitHeads(kh, dimHeads); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
@@ -447,7 +462,7 @@ public:
       // Regularise Wv //
       if (regBool || regWv) {
         // LOG(info, "PUSHING COST FOR WV LAYER {}", prefix);
-        auto Wv_cost = calculateRegularisation(Wv, regShape, 8);
+        auto Wv_cost = calculateRegularisation(Wv, bv, regShape, 8);
         regularisers_.push_back(Wv_cost);
         // stupid hack to connect to a graph, it gets the cost later but screams about more than 1 top node
         auto ugh = Wv_cost / Wv_cost;
@@ -474,10 +489,11 @@ public:
     if(project || dimAtt != dimOut) {
       auto Wo
         = graph_->param(prefix + "_Wo", {dimAtt, dimOut}, inits::glorotUniform());
+      auto bo = graph_->param(prefix + "_bo", {1, dimOut}, inits::zeros());
       // Regularise Wo //
       if (regBool || regWo) {
         // LOG(info, "PUSHING COST FOR WO LAYER {}", prefix);
-        auto Wo_cost = calculateRegularisation(Wo, regShape, 8, true);
+        auto Wo_cost = calculateRegularisation(Wo, bo, regShape, 8, true);
         regularisers_.push_back(Wo_cost);
         // stupid hack to connect to a graph, it gets the cost later but screams about more than 1 top node
         auto ugh = Wo_cost / Wo_cost;
@@ -485,7 +501,6 @@ public:
       }
       //////////////////
 
-      auto bo = graph_->param(prefix + "_bo", {1, dimOut}, inits::zeros());
       output = affine(output, Wo, bo);
     }
 
