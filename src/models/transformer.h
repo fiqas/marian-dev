@@ -1083,7 +1083,7 @@ public:
       // remember decoder state
       decoderStates.push_back(decoderState);
 
-      query = LayerFFN(prefix_ + "_l" + layerNo + "_ffn", query, tiedLayers[i]); // [-4: beam depth=1, -3: batch size, -2: max length, -1: vector dim]
+      query = LayerFFN(prefix_ + "_l" + layerNo + "_ffn", query, std::stoi(layerNo)); // [-4: beam depth=1, -3: batch size, -2: max length, -1: vector dim]
 
       checkpoint(query);
     }
