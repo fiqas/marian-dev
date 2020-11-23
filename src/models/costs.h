@@ -2,10 +2,12 @@
 
 #include "layers/generic.h"
 #include "layers/guided_alignment.h"
+#include "layers/regulariser.h"
 #include "layers/loss.h"
 #include "layers/weight.h"
 #include "models/encoder_decoder.h"
 #include "models/encoder_classifier.h"
+#include "models/encoder_pooler.h"
 
 namespace marian {
 namespace models {
@@ -87,6 +89,49 @@ public:
       multiLoss->push_back(alignmentLoss);
     }
 
+    // LOG(info, "REGULARISER {}", options_->get<float>("group-lasso-regulariser", 0.0f));
+    // LOG(info, "TYPE {}", options_->get<std::string>("group-lasso-regulariser-type", ""));
+    // std::vector<float> losses;
+    // std::vector<float> counts;
+    // partialLoss.loss(losses);
+    // partialLoss.count(counts);
+    // LOG(info, "COST {} Value {} Count {}", 1, losses[0], counts[0]);
+    // debug(partialLoss.loss(), "COST 1 VALUE");
+    // debug(partialLoss.count(), "COST 1 COUNT");
+    
+    auto regFloat = options_->get<float>("group-lasso-regulariser", 0.0f);
+    auto regType = options_->get<std::string>("group-lasso-regulariser-type", "");
+    if(regFloat != 0 && !inference_ && regType != "") {
+      // LOG(info, "INSIDE GROUP LASSO COST");
+
+      // std::vector<Expr> encRegularisers = {};
+      std::vector<Expr> decRegularisers = {};
+      
+      // if (regType.find("e") != std::string::npos)
+        auto encRegularisers = encdec->getEncoders()[0]->getRegularisers();
+      if (regType.find("d") != std::string::npos)
+        decRegularisers = encdec->getDecoders()[0]->getRegularisers();
+      
+      auto regulariserLoss = regulariserCost(graph, corpusBatch, options_, encRegularisers, decRegularisers, partialLoss.count());
+      multiLoss->push_back(regulariserLoss);
+
+      // debug(regulariserLoss.loss(), "COST 2 VALUE");
+      // debug(regulariserLoss.count(), "COST 2 COUNT");
+
+      // debug(multiLoss->loss(), "TOTAL COST VALUE");
+      // debug(multiLoss->count(), "TOTAL COST COUNT");
+
+      // std::vector<float> lossess;
+      // std::vector<float> countss;
+      // regulariserLoss.loss(lossess);
+      // regulariserLoss.count(countss);
+      // LOG(info, "COST {} Value {} Count {}", 2, lossess[0], countss[0]);
+    }
+
+    // for (size_t i = 0; i < multiLoss->size(); i++) {
+    // }
+    // LOG(info, "multiLoss size {}", multiLoss->size());
+
     return multiLoss;
   }
 };
@@ -126,6 +171,68 @@ public:
                                       /*weights=*/nullptr);
       multiLoss->push_back(partialLoss);
     }
+    return multiLoss;
+  }
+};
+
+// Wraps an EncoderClassifier so it can produce a cost from raw logits. @TODO: Needs refactoring
+class EncoderPoolerRankCost : public ICost {
+protected:
+  Ptr<Options> options_;
+  const bool inference_{false};
+  float margin_{0.3f};
+  float normalizer_{0.0f};
+
+public:
+  EncoderPoolerRankCost(Ptr<Options> options)
+      : options_(options), 
+        inference_(options->get<bool>("inference", false)) {
+      auto trainEmbedderRank = options->get<std::vector<std::string>>("train-embedder-rank", {});
+      ABORT_IF(trainEmbedderRank.empty(), "EncoderPoolerRankCost expects train-embedder-rank to be set");
+
+      margin_ = std::stof(trainEmbedderRank[0]);
+      if(trainEmbedderRank.size() > 1)
+        normalizer_ = std::stof(trainEmbedderRank[1]);
+  }
+
+  Ptr<MultiRationalLoss> apply(Ptr<IModel> model,
+                               Ptr<ExpressionGraph> graph,
+                               Ptr<data::Batch> batch,
+                               bool clearGraph = true) override {
+
+    auto encpool = std::static_pointer_cast<EncoderPooler>(model);
+    auto corpusBatch = std::static_pointer_cast<data::CorpusBatch>(batch);
+    std::vector<Expr> dotProducts = encpool->apply(graph, corpusBatch, clearGraph);
+
+    int dimBatch = dotProducts[0]->shape()[-2];
+    Ptr<MultiRationalLoss> multiLoss = New<SumMultiRationalLoss>();
+
+    ABORT_IF(inference_, "Rank training does not work in inference mode");
+    ABORT_IF(dotProducts.size() != 3, "Three dot products required for margin loss");
+
+    // multi-objective training
+    auto maxDot = max(concatenate(dotProducts, -1), -1); // compute maximum for numeric stability
+    auto exponent = dotProducts[0] - maxDot - margin_;   // substract maximum and margin from dot product
+    auto dp = exp(exponent);
+
+    Expr dn1, dn2;
+    if(normalizer_ != 0.0f) { // the normalizer may be useful for fluctuating batch sizes since it limits the magnitude of the sum of negative examples in the denominator.
+      dn1 = normalizer_ * mean(exp(dotProducts[1] - maxDot), -1); // dot product of anchor and first negative example
+      dn2 = normalizer_ * mean(exp(dotProducts[2] - maxDot), -1); // dot product of positive examples and first negative example
+    } else {
+      dn1 = sum(exp(dotProducts[1] - maxDot), -1); // dot product of anchor and first negative example
+      dn2 = sum(exp(dotProducts[2] - maxDot), -1); // dot product of positive examples and first negative example
+    }
+
+    // We rewrite the loss so it looks more like a log-softmax, presumably more stable?
+    // Let dp = exp(phi - m) then -log(dp / (dp + sum(dn))) = -log(dp) + log(dp + sum(dn)) = log(dp + sum(dn)) - log(dp) = log(dp + sum(dn)) - (phi - m)
+    auto marginLoss1 = log(dp + dn1) - exponent; // softmax-margin loss for anchor vs negative examples
+    auto marginLoss2 = log(dp + dn2) - exponent; // symmetric version of the above with positive example vs negative examples
+    auto marginLoss  = sum(marginLoss1 + marginLoss2, /*axis=*/-2);
+    
+    RationalLoss loss(marginLoss, (float)dimBatch);
+    multiLoss->push_back(loss);
+    
     return multiLoss;
   }
 };

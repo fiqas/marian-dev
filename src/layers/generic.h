@@ -61,6 +61,7 @@ struct IEmbeddingLayer {
   // alternative from indices directly
   virtual Expr applyIndices(const std::vector<WordIndex>& embIdx, const Shape& shape) const = 0;
   virtual ~IEmbeddingLayer() {}
+  virtual Expr getEmbeddingExpr() { return nullptr; }
 };
 
 // base class for Encoder and Decoder classes, which have embeddings and a batch index (=stream index)
@@ -68,18 +69,21 @@ class EncoderDecoderLayerBase : public LayerBase {
 protected:
   const std::string prefix_;
   const bool embeddingFix_;
-  const float dropout_;
+  const float dropoutEmbeddings_; // this drops out full embedding vectors 
   const bool inference_;
   const size_t batchIndex_;
   mutable std::vector<Ptr<IEmbeddingLayer>> embeddingLayers_; // (lazily created)
 
-  EncoderDecoderLayerBase(Ptr<ExpressionGraph> graph, Ptr<Options> options, const std::string& prefix, size_t batchIndex,
-        float dropout,
-        bool embeddingFix) :
+  EncoderDecoderLayerBase(Ptr<ExpressionGraph> graph, 
+                          Ptr<Options> options, 
+                          const std::string& prefix, 
+                          size_t batchIndex,
+                          float dropoutEmbeddings,
+                          bool embeddingFix) :
       LayerBase(graph, options),
       prefix_(options->get<std::string>("prefix", prefix)),
       embeddingFix_(embeddingFix),
-      dropout_(dropout),
+      dropoutEmbeddings_(dropoutEmbeddings),
       inference_(options->get<bool>("inference", false)),
       batchIndex_(options->get<size_t>("index", batchIndex)) {}
 
@@ -298,11 +302,14 @@ public:
 // EncoderDecoderLayerBase, which knows to pass on all required parameters from options.
 class Embedding : public LayerBase, public IEmbeddingLayer {
   Expr E_;
+  Expr mask_;
   Ptr<FactoredVocab> factoredVocab_;
   Expr multiRows(const Words& data, float dropProb) const;
+  bool inference_{false};
+
 public:
   Embedding(Ptr<ExpressionGraph> graph, Ptr<Options> options);
-
+  Expr getEmbeddingExpr() override { return E_; }
   std::tuple<Expr/*embeddings*/, Expr/*mask*/> apply(Ptr<data::SubBatch> subBatch) const override final;
 
   Expr apply(const Words& words, const Shape& shape) const override final;
@@ -312,8 +319,11 @@ public:
 
 class ULREmbedding : public LayerBase, public IEmbeddingLayer {
   std::vector<Expr> ulrEmbeddings_; // @TODO: These could now better be written as 6 named class members
+  bool inference_{false};
+
 public:
-  ULREmbedding(Ptr<ExpressionGraph> graph, Ptr<Options> options) : LayerBase(graph, options) {
+  ULREmbedding(Ptr<ExpressionGraph> graph, Ptr<Options> options) 
+    : LayerBase(graph, options), inference_(opt<bool>("inference")) {
     std::string name = "url_embed"; //opt<std::string>("prefix");
     int dimKeys = opt<int>("dimTgtVoc");
     int dimQueries = opt<int>("dimSrcVoc");
@@ -399,7 +409,9 @@ public:
     qt = qt/sqrtDim;  // normalize accordin to embed size to avoid dot prodcut growing large in magnitude with larger embeds sizes
     auto z = dot(qt, keyEmbed, false, true);      // query-key similarity
     float dropProb = this->options_->get<float>("ulr-dropout", 0.0f);  // default no dropout
-    z = dropout(z, dropProb);
+    if(!inference_)
+      z = dropout(z, dropProb);
+
     float tau = this->options_->get<float>("ulr-softmax-temperature", 1.0f);  // default no temperature
     // temperature in softmax is to control randomness of predictions
     // high temperature Softmax outputs are more close to each other
@@ -411,7 +423,8 @@ public:
     auto graph = ulrEmbeddings_.front()->graph();
     auto batchMask = graph->constant({ dimWords, dimBatch, 1 },
                                      inits::fromVector(subBatch->mask()));
-    batchEmbeddings = dropout(batchEmbeddings, options_->get<float>("dropout", 0.0f), {batchEmbeddings->shape()[-3], 1, 1});
+    if(!inference_)
+      batchEmbeddings = dropout(batchEmbeddings, options_->get<float>("dropout-embeddings", 0.0f), {batchEmbeddings->shape()[-3], 1, 1});
     return std::make_tuple(batchEmbeddings, batchMask);
   }
 
@@ -437,36 +450,85 @@ Expr denseInline(Expr x, std::string prefix, std::string suffix, int outDim, con
   auto W = graph->param(prefix + "_W" + suffix, { x->shape()[-1], outDim }, inits::glorotUniform());
   auto b = graph->param(prefix + "_b" + suffix, { 1,              outDim }, inits::zeros());
 
-  x = affine(x, W, b);
+  // BLOCK-SPARSE MASK
+  auto W_mask = 1 - eq(W, 0);
+  auto W_masked = W * W_mask;
+
+  x = affine(x, W_masked, b);
   if (actFn)
     x = actFn(x);
-  x = dropout(x, dropProb);
+  x = dropout(x, dropProb); // @TODO: check for infernce?
   return x;
 }
 
-// denseInline but with pruned parameters
+// like affine() but with built-in parameters, activation, and dropout
 static inline
-Expr denseSelectedInline(Expr x, std::string prefix, std::string suffix, int outDim, const std::function<Expr(Expr)>& actFn = nullptr, float dropProb = 0.0f)
+// Expr denseSelectedInline(Expr x, std::string prefix, std::string suffix, int outDim, const std::function<Expr(Expr)>& actFn = nullptr, float dropProb = 0.0f, bool biasSlice = false)
+std::tuple<Expr, Expr> denseInlineRegularised(Expr x, std::string prefix, std::string suffix, int outDim, int block, std::string regShape, bool biasSlice = false, const std::function<Expr(Expr)>& actFn = nullptr, float dropProb = 0.0f) 
 {
   auto graph = x->graph();
 
   Expr W, b;
-  W = graph->param(prefix + "_W" + suffix + "_selected", { x->shape()[-1], outDim }, inits::glorotUniform());
-  if (suffix == "1") {
-    b = graph->param(prefix + "_b" + suffix + "_selected", { 1,              outDim }, inits::zeros());
+  // W = graph->param(prefix + "_W" + suffix + "_selected", { x->shape()[-1], outDim }, inits::glorotUniform());
+  // if (biasSlice) {
+    // b = graph->param(prefix + "_b" + suffix + "_selected", { 1,              outDim }, inits::zeros());
+  // }
+  // else { 
+    // b = graph->param(prefix + "_b" + suffix, { 1,              outDim }, inits::zeros());
+  // }
+  W = graph->param(prefix + "_W" + suffix, { x->shape()[-1], outDim }, inits::glorotUniform());
+  b = graph->param(prefix + "_b" + suffix, { 1,              outDim }, inits::zeros());
+
+  // MASK OVER TURNED-OFF PARAMETERS
+  auto W_mask = 1 - eq(W, 0);
+  W = W * W_mask;
+  
+  Expr W_cost;
+
+  if (regShape == "block") {
+    int h = W->shape()[0];
+    int innerShape = W->shape()[0] * W->shape()[1] / (block * h);
+    int blockNum = W->shape()[0] * W->shape()[1] / (block * block);
+    
+    auto W_reshaped = reshape(W, {h / block, block, innerShape, block}); 
+    auto W_transposed = transpose(W_reshaped, {0, 2, 1, 3});
+    auto W_blocks = reshape(W_transposed, {1, blockNum, block, block});
+  
+    // Calculate L2-regularisation
+   
+    auto W_pow = W_blocks * W_blocks;
+    auto W_sum = sum(sum(W_pow, -2), -1);
+    auto W_sqrt = sqrt(W_sum);
+    W_cost = sum(W_sqrt, -3);
   }
-  else { 
-    b = graph->param(prefix + "_b" + suffix, { 1,              outDim }, inits::zeros());
+  else if (regShape == "rowcol") {
+    size_t axis_l2, axis_l1;
+    if (std::stoi(suffix) % 2 != 0) {
+      axis_l2 = -2;
+      axis_l1 = -1;
+    }
+    else {
+      axis_l2 = -1;
+      axis_l1 = -2;
+    }
+
+    auto W_pow = W * W; 
+    auto W_sum = sum(W_pow, axis_l2);
+    auto W_sqrt = sqrt(W_sum);
+    W_cost = sum(W_sqrt, axis_l1);
+
   }
 
-  // auto W = graph->param(prefix + "_W" + suffix, { x->shape()[-1], outDim }, inits::glorotUniform());
-  // auto b = graph->param(prefix + "_b" + suffix, { 1,              outDim }, inits::zeros());
 
-  x = affine(x, W, b);
+  auto ugh = W_cost / W_cost; // HACKHACKHACK to connect it to a graph
+  
+
+  x = affine(x, W * ugh, b);
   if (actFn)
     x = actFn(x);
   x = dropout(x, dropProb);
-  return x;
+
+  return std::make_tuple(x, W_cost);
 }
 
 static inline

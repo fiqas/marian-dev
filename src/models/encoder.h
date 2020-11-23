@@ -16,6 +16,8 @@ public:
   virtual Ptr<EncoderState> build(Ptr<ExpressionGraph>, Ptr<data::CorpusBatch>) = 0;
 
   virtual void clear() = 0;
+  virtual const std::vector<Expr> getRegularisers() { return { }; };
+  virtual const Expr getRegulariser() { return { }; };
 };
 
 }  // namespace marian
