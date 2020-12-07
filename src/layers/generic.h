@@ -451,9 +451,9 @@ Expr denseSelectedInline(Expr x, std::string prefix, std::string suffix, int out
   auto graph = x->graph();
 
   Expr W, b;
-  W = graph->param(prefix + "_W" + suffix + "_selected", { x->shape()[-1], outDim }, inits::glorotUniform());
+  W = graph->param(prefix + "_W" + suffix, { x->shape()[-1], outDim }, inits::glorotUniform());
   if (suffix == "1") {
-    b = graph->param(prefix + "_b" + suffix + "_selected", { 1,              outDim }, inits::zeros());
+    b = graph->param(prefix + "_b" + suffix, { 1,              outDim }, inits::zeros());
   }
   else { 
     b = graph->param(prefix + "_b" + suffix, { 1,              outDim }, inits::zeros());
