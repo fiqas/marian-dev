@@ -271,6 +271,8 @@ public:
     int dimModel = q->shape()[-1];
     // @TODO: good opportunity to implement auto-batching here or do something manually?
     auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimModel}, inits::glorotUniform());
+    auto Wq_mask = 1 - eq(Wq, 0);
+    Wq = Wq * Wq_mask;
     auto bq = graph_->param(prefix + "_bq", {       1, dimModel}, inits::zeros());
     auto qh = affine(q, Wq, bq);
     qh = SplitHeads(qh, dimHeads); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
@@ -286,6 +288,8 @@ public:
     }
     else {
       auto Wk = graph_->param(prefix + "_Wk", {dimModel, dimModel}, inits::glorotUniform());
+      auto Wk_mask = 1 - eq(Wk, 0);
+      Wk = Wk * Wk_mask;
       auto bk = graph_->param(prefix + "_bk", {1,        dimModel}, inits::zeros());
 
       kh = affine(keys, Wk, bk);     // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
@@ -300,6 +304,8 @@ public:
       vh = cache_[prefix + "_values"];
     } else {
       auto Wv = graph_->param(prefix + "_Wv", {dimModel, dimModel}, inits::glorotUniform());
+      auto Wv_mask = 1 - eq(Wv, 0);
+      Wv = Wv * Wv_mask;
       auto bv = graph_->param(prefix + "_bv", {1,        dimModel}, inits::zeros());
 
       vh = affine(values, Wv, bv); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
@@ -321,6 +327,8 @@ public:
     if(project || dimAtt != dimOut) {
       auto Wo
         = graph_->param(prefix + "_Wo", {dimAtt, dimOut}, inits::glorotUniform());
+      auto Wo_mask = 1 - eq(Wo, 0);
+      Wo = Wo * Wo_mask;
       auto bo = graph_->param(prefix + "_bo", {1, dimOut}, inits::zeros());
       output = affine(output, Wo, bo);
     }
