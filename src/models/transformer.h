@@ -332,6 +332,36 @@ public:
   Expr calculateRegularisation(Expr W, Expr b, std::string regShape, int block, bool rows = false) {
   
     Expr W_cost;  
+    if (regShape == "heads") {
+      // LOG(info, "Inside calculateReg pruning whole heads... {}", regShape);
+      int h = W->shape()[0];
+      int block_h = 256;
+      int block_w = 32;
+      int innerShape = W->shape()[0] * W->shape()[1] / (block_w * h);
+      int blockNum = W->shape()[0] * W->shape()[1] / (block_h * block_w);
+      
+      auto W_reshaped = reshape(W, {h / block_h, block_h, innerShape, block_w}); 
+      auto W_transposed = transpose(W_reshaped, {0, 2, 1, 3});
+      // debug(W, "original");
+      // debug(W_transposed, "separate heads");
+      
+      auto W_blocks = reshape(W_transposed, {1, blockNum, block_h, block_w});
+      // Calculate L2-regularisation
+     
+      auto W_pow = W_blocks * W_blocks;
+      auto W_sum = sum(sum(W_pow, -2), -1);
+
+      if(!rows) {
+        auto b_blocks = reshape(b, {b->shape()[1] / block_w, 1, block_w});
+        auto b_pow = b_blocks * b_blocks;
+        auto b_sum = sum(b_pow, -1);
+        W_sum = W_sum + b_sum;	
+      }
+
+      auto W_sqrt = sqrt(W_sum);
+      W_cost = sum(W_sqrt, -3);
+      
+    }
     if (regShape == "block") {
       int h = W->shape()[0];
       int innerShape = W->shape()[0] * W->shape()[1] / (block * h);
@@ -380,6 +410,7 @@ public:
       W_cost = sum(W_sqrt, axis_l1);
 
     }
+    // debug(W_cost, "W_cost");
     return W_cost;
   }
 
@@ -394,8 +425,11 @@ public:
                  bool cache = false,
                  bool saveAttentionWeights = false) {
     int dimModel = q->shape()[-1];
+    
+    bool maskBool = opt<bool>("transformer-mask");
     auto regType = opt<std::string>("group-lasso-regulariser-type", "");
-    auto regShape = opt<std::string>("group-lasso-regulariser-shape", "block");
+    // auto regShape = opt<std::string>("group-lasso-regulariser-shape", "block");
+    auto regShape = "heads";
     bool regBool = (regType.find("h") != std::string::npos);
     bool regWk = (regType.find("k") != std::string::npos);
     bool regWv = (regType.find("v") != std::string::npos);
@@ -406,6 +440,11 @@ public:
     auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorotUniform());
     auto bq = graph_->param(prefix + "_bq", {       1, dimHeads * dimHeadSize}, inits::zeros());
 
+    // Mask zeroed-out parameters
+    if (maskBool) {
+        auto Wq_mask = 1 - eq(Wq, 0);
+        Wq = Wq * Wq_mask;
+    }
     // Regularise Wq //
     if (regBool || regWq) {
       auto Wq_cost = calculateRegularisation(Wq, bq, regShape, 8);
@@ -433,6 +472,11 @@ public:
       auto Wk = graph_->param(prefix + "_Wk", {dimModel, dimHeads * dimHeadSize}, inits::glorotUniform());
       auto bk = graph_->param(prefix + "_bk", {1,        dimHeads * dimHeadSize}, inits::zeros());
     
+      // Mask zeroed-out parameters
+      if (maskBool) {
+        auto Wk_mask = 1 - eq(Wk, 0);
+        Wk = Wk * Wk_mask;
+      }
       // Regularise Wk //
       if (regBool || regWk) {
         // LOG(info, "PUSHING COST FOR WK LAYER {}", prefix);
@@ -458,7 +502,13 @@ public:
     } else {
       auto Wv = graph_->param(prefix + "_Wv", {dimModel, dimHeads * dimHeadSize}, inits::glorotUniform());
       auto bv = graph_->param(prefix + "_bv", {1,        dimHeads * dimHeadSize}, inits::zeros());
-    
+      
+      // Mask zeroed-out parameters
+      if (maskBool) {
+        auto Wv_mask = 1 - eq(Wv, 0);
+        Wv = Wv * Wv_mask;
+      }
+
       // Regularise Wv //
       if (regBool || regWv) {
         // LOG(info, "PUSHING COST FOR WV LAYER {}", prefix);
@@ -490,6 +540,12 @@ public:
       auto Wo
         = graph_->param(prefix + "_Wo", {dimAtt, dimOut}, inits::glorotUniform());
       auto bo = graph_->param(prefix + "_bo", {1, dimOut}, inits::zeros());
+      
+      // Mask zeroed-out parameters
+      if (maskBool) {
+        auto Wo_mask = 1 - eq(Wo, 0);
+        Wo = Wo * Wo_mask;
+      }
       // Regularise Wo //
       if (regBool || regWo) {
         // LOG(info, "PUSHING COST FOR WO LAYER {}", prefix);
@@ -569,6 +625,7 @@ public:
   Expr LayerFFN(std::string prefix, Expr input, int layerNum) {
     int dimModel = input->shape()[-1];
     float dropProb = inference_ ? 0 : opt<float>("transformer-dropout");
+    bool maskBool = opt<bool>("transformer-mask");
     auto opsPre = opt<std::string>("transformer-preprocess");
     auto output = preProcess(prefix + "_ffn", opsPre, input, dropProb);
 
@@ -615,9 +672,9 @@ public:
       for(int i = 1; i < depthFfn + 1; ++i) {
         Expr cost;
         if (i != depthFfn)
-          output = denseInline(output, prefix, /*suffix=*/std::to_string(i), dimFfn, actFn, ffnDropProb);
+          output = denseInline(output, prefix, /*suffix=*/std::to_string(i), dimFfn, actFn, ffnDropProb, maskBool);
         else
-          output = denseInline(output, prefix, /*suffix=*/std::to_string(depthFfn), dimModel);
+          output = denseInline(output, prefix, /*suffix=*/std::to_string(depthFfn), dimModel, nullptr, 0.0f, maskBool);
       }
     }
   

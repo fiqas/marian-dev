@@ -246,13 +246,12 @@ void ConfigParser::addOptionsModel(cli::CLIWrapper& cli) {
   cli.add<int>("--transformer-heads",
       "Number of heads in multi-head attention (transformer)",
       8);
+  cli.add<bool>("--transformer-mask",
+      "Mask parameters in FFN and attention (pruning)",
+      false);
   cli.add<int>("--transformer-head-dim",
       "Dimension heads in multi-head attention (transformer)",
       64);
-  cli.add<bool>("--block-sparse-ffn",
-      "Apply a block-sparse mask to FFN layers (from npz model)");
-  cli.add<bool>("--block-sparse-emb",
-      "Apply a block-sparse mask to embeddings (from npz model)");
   cli.add<bool>("--transformer-head-file",
       "Load number of heads from model.npz.{decoder,encoder}_pruning.yml");
   cli.add<std::vector<int>>("--transformer-encoder-heads",

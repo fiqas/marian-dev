@@ -443,18 +443,20 @@ public:
 
 // like affine() but with built-in parameters, activation, and dropout
 static inline
-Expr denseInline(Expr x, std::string prefix, std::string suffix, int outDim, const std::function<Expr(Expr)>& actFn = nullptr, float dropProb = 0.0f)
+Expr denseInline(Expr x, std::string prefix, std::string suffix, int outDim, const std::function<Expr(Expr)>& actFn = nullptr, float dropProb = 0.0f, bool maskBool = false)
 {
   auto graph = x->graph();
 
   auto W = graph->param(prefix + "_W" + suffix, { x->shape()[-1], outDim }, inits::glorotUniform());
   auto b = graph->param(prefix + "_b" + suffix, { 1,              outDim }, inits::zeros());
 
-  // BLOCK-SPARSE MASK
-  auto W_mask = 1 - eq(W, 0);
-  auto W_masked = W * W_mask;
+  // Mask zeroed-out parameters
+  if (maskBool) {
+    auto W_mask = 1 - eq(W, 0);
+    W = W * W_mask;
+  }
 
-  x = affine(x, W_masked, b);
+  x = affine(x, W, b);
   if (actFn)
     x = actFn(x);
   x = dropout(x, dropProb); // @TODO: check for infernce?
