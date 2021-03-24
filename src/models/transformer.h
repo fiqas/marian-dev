@@ -332,7 +332,19 @@ public:
   Expr calculateRegularisation(Expr W, Expr b, std::string regShape, int block, bool rows = false) {
   
     Expr W_cost;  
-    if (regShape == "heads") {
+    if (regShape == "l1") {
+
+      W_cost = sum(sum(abs(W), -1), -2);
+
+    }
+    else if (regShape == "elastic") {
+
+      auto W_l1 = sum(sum(abs(W), -1), -2);
+      auto W_l2 = sum(sum(W * W, -1), -2);
+      W_cost = W_l1 + W_l2;
+
+    }
+    else if (regShape == "heads") {
       // LOG(info, "Inside calculateReg pruning whole heads... {}", regShape);
       int h = W->shape()[0];
       int block_h = 256;
@@ -362,7 +374,7 @@ public:
       W_cost = sum(W_sqrt, -3);
       
     }
-    if (regShape == "block") {
+    else if (regShape == "block") {
       int h = W->shape()[0];
       int innerShape = W->shape()[0] * W->shape()[1] / (block * h);
       int blockNum = W->shape()[0] * W->shape()[1] / (block * block);

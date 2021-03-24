@@ -487,7 +487,19 @@ std::tuple<Expr, Expr> denseInlineRegularised(Expr x, std::string prefix, std::s
   
   Expr W_cost;
 
-  if (regShape == "block") {
+  if (regShape == "l1") {
+
+    W_cost = sum(sum(abs(W), -1), -2);
+
+  }
+  else if (regShape == "elastic") {
+      
+    auto W_l1 = sum(sum(abs(W), -1), -2);
+    auto W_l2 = sum(sum(W * W, -1), -2);
+    W_cost = W_l1 + W_l2;
+
+  }
+  else if (regShape == "block") {
     int h = W->shape()[0];
     int innerShape = W->shape()[0] * W->shape()[1] / (block * h);
     int blockNum = W->shape()[0] * W->shape()[1] / (block * block);
