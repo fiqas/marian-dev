@@ -248,6 +248,24 @@ void ConfigParser::addOptionsModel(cli::CLIWrapper& cli) {
   cli.add<int>("--transformer-heads",
       "Number of heads in multi-head attention (transformer)",
       8);
+  cli.add<int>("--transformer-head-dim",
+		      "Dimension heads in multi-head attention (transformer)",
+		      64);
+  cli.add<bool>("--transformer-head-file",
+		 "Load number of heads from model.npz.{decoder,encoder}_pruning.yml");
+  cli.add<std::vector<int>>("--transformer-encoder-heads",
+		      "Number of heads in encoder self-attention (transformer)",
+		      {8, 8, 8, 8, 8, 8});
+  cli.add<std::vector<int>>("--transformer-decoder-heads",
+		      "Number of heads in decoder self-attention (transformer)",
+		      {8, 8, 8, 8, 8, 8});
+  cli.add<std::vector<int>>("--transformer-context-heads",
+		      "Number of heads in encoder-decoder context attention (transformer)",
+		      {8, 8, 8, 8, 8, 8});
+  cli.add<bool>("--transformer-head-print",
+		      "Print statistics in multi-head attention (transformer), for lottery ticket pruning.");
+  cli.add<bool>("--transformer-tied-ffn",
+		"Tie FFN layers in an encoder");
   cli.add<bool>("--transformer-no-projection",
       "Omit linear projection after multi-head attention (transformer)");
   cli.add<bool>("--transformer-pool",
