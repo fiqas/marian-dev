@@ -2,8 +2,16 @@
 #include "tensors/tensor_operators.h"
 
 #include <sstream>
+#include <chrono>
+#include <thread>
 
 namespace marian {
+
+inline void timeOpPrint(std::chrono::time_point<std::chrono::steady_clock>& start, std::chrono::time_point<std::chrono::steady_clock>& end, Expr input, std::string direction="forward") {
+  std::thread::id this_id = std::this_thread::get_id();
+  std::chrono::duration<double> elapsed_seconds = end-start;
+  std::cerr << this_id << " " << direction << " Elapsed time: " << elapsed_seconds.count() << " s: " << input->name() << " " << input->shape() << std::endl;;
+}
 
 ExpressionGraph::ExpressionGraph(bool inference)
   : inferenceOnly_(inference),
@@ -103,6 +111,7 @@ void ExpressionGraph::forwardNext() {
 
 void ExpressionGraph::forward(std::list<Expr>& forwardTape, bool finalPass) {
   while(!forwardTape.empty()) {
+    auto start = std::chrono::steady_clock::now();
     auto v = forwardTape.front();
 
     v->allocate();
@@ -156,7 +165,8 @@ void ExpressionGraph::forward(std::list<Expr>& forwardTape, bool finalPass) {
         }
       }
     }
-
+    auto end = std::chrono::steady_clock::now();
+    timeOpPrint(start, end, v);
     forwardTape.pop_front();
   }
 }
@@ -194,6 +204,7 @@ void ExpressionGraph::backward(bool reset, float clipValue) {
   bool firstNaN = true;
   while(!nodesBackward_.empty()) {
     auto v = nodesBackward_.back();  // return the last element
+    auto start = std::chrono::steady_clock::now();
     nodesBackward_.pop_back();       // remove the last element
 
     // for non-top nodes: allocates memory and initialises gradients to 0
@@ -243,7 +254,8 @@ void ExpressionGraph::backward(bool reset, float clipValue) {
         }
       }
     }
-
+    auto end = std::chrono::steady_clock::now();
+    timeOpPrint(start, end, v, "backward");
     v->children().clear();
   }
 }
