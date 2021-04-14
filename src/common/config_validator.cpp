@@ -147,6 +147,12 @@ void ConfigValidator::validateOptionsTraining() const {
                                                || get<std::string>("ulr-keys-vectors") == "")),
            "ULR enablign requires query and keys vectors specified with --ulr-query-vectors and "
            "--ulr-keys-vectors option");
+
+  // validate model quantization
+  size_t bits = get<size_t>("quantize-bits");
+  ABORT_IF(bits > 32, "Invalid quantization bits. Must be from 0 to 32 bits");
+
+  ABORT_IF(bits > 0 && !get<bool>("sync-sgd"), "Model quantization only works with synchronous training (--sync-sgd)");
 }
 
 void ConfigValidator::validateModelExtension(cli::mode mode) const {
@@ -164,22 +170,16 @@ void ConfigValidator::validateModelExtension(cli::mode mode) const {
   }
 }
 
-void ConfigValidator::validateDevices(cli::mode mode) const {
+void ConfigValidator::validateDevices(cli::mode /*mode*/) const {
   std::string devices = utils::join(get<std::vector<std::string>>("devices"));
   utils::trim(devices);
 
   regex::regex pattern;
   std::string help;
-  // @TODO: Is this format still supported? Remove this if not.
-  if(mode == cli::mode::training && get<bool>("multi-node")) {
-    // valid strings: '0: 1 2', '0:1 2 1:2 3'
-    pattern = "( *[0-9]+ *: *[0-9]+( *[0-9]+)*)+";
-    help = "Supported format for multi-node setting: '0:0 1 2 3 1:0 1 2 3'";
-  } else {
-    // valid strings: '0', '0 1 2 3', '3 2 0 1'
-    pattern = "[0-9]+( *[0-9]+)*";
-    help = "Supported formats: '0 1 2 3'";
-  }
+
+  // valid strings: '0', '0 1 2 3', '3 2 0 1'
+  pattern = "[0-9]+( *[0-9]+)*";
+  help = "Supported formats: '0 1 2 3'";
 
   ABORT_IF(!regex::regex_match(devices, pattern),
            "the argument '{}' for option '--devices' is invalid. {}",

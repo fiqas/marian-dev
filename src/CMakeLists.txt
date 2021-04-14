@@ -5,6 +5,8 @@ include_directories(3rd_party)
 include_directories(3rd_party/SQLiteCpp/include)
 include_directories(3rd_party/sentencepiece)
 include_directories(3rd_party/fbgemm/include)
+include_directories(3rd_party/intgemm)
+include_directories(${CMAKE_BINARY_DIR}/src/3rd_party/intgemm) # running cmake on the intgemm submodule triggers config file generation in this directory.
 include_directories(${CMAKE_BINARY_DIR}/local/include)
 
 set(MARIAN_SOURCES
@@ -38,9 +40,11 @@ set(MARIAN_SOURCES
   data/corpus_sqlite.cpp
   data/corpus_nbest.cpp
   data/text_input.cpp
+  data/shortlist.cpp
 
   3rd_party/cnpy/cnpy.cpp
   3rd_party/ExceptionWithCallStack.cpp
+
   3rd_party/onnx/protobuf/onnx-ml.pb-wrapper.cpp
 
   3rd_party/phf/phf.cc
@@ -52,10 +56,7 @@ set(MARIAN_SOURCES
   tensors/cpu/prod.cpp
   tensors/cpu/topk.cpp
   tensors/cpu/tensor_operators.cpp
-
-  tensors/cpu/sharp/int_gemm.cpp
-  tensors/cpu/sharp/avx_gemm.cpp
-  tensors/cpu/sharp/sse_gemm.cpp
+  tensors/cpu/integer_common.cpp
   tensors/cpu/fbgemm/packed_gemm.cpp
 
   graph/expression_graph.cpp
@@ -72,16 +73,22 @@ set(MARIAN_SOURCES
   layers/loss.cpp
   layers/weight.cpp
   layers/lsh.cpp
+  layers/embedding.cpp
+  layers/output.cpp
+  layers/logits.cpp
 
   rnn/cells.cpp
   rnn/attention.cpp
 
+  optimizers/quantizer.cpp
   optimizers/clippers.cpp
   optimizers/optimizers.cpp
+  optimizers/exponential_smoothing.cpp
 
   models/model_factory.cpp
   models/encoder_decoder.cpp
   models/transformer_stub.cpp
+  models/costs.cpp
 
   rescorer/score_collector.cpp
   embedder/vector_collector.cpp
@@ -101,9 +108,14 @@ set(MARIAN_SOURCES
   training/validator.cpp
   training/communicator.cpp
 
-  # this is only compiled to catch build errors, but not linked
+  # this is only compiled to catch build errors
   microsoft/quicksand.cpp
   microsoft/cosmos.cpp
+
+  # copied from quicksand to be able to read binary shortlist
+  microsoft/shortlist/utils/Converter.cpp
+  microsoft/shortlist/utils/StringUtils.cpp
+  microsoft/shortlist/utils/ParameterTree.cpp
 
   $<TARGET_OBJECTS:libyaml-cpp>
   $<TARGET_OBJECTS:SQLiteCpp>
@@ -163,6 +175,8 @@ if(CUDA_FOUND)
     tensors/gpu/device.cu
     tensors/gpu/algorithm.cu
     tensors/gpu/prod.cpp
+    tensors/gpu/prod.cu
+    tensors/gpu/prod_sparse.cpp
     tensors/gpu/topk.cu
     tensors/gpu/element.cu
     tensors/gpu/add.cu
@@ -176,8 +190,6 @@ if(CUDA_FOUND)
   target_compile_options(marian_cuda PRIVATE ${ALL_WARNINGS})
   # make sure all local dependencies are installed first before this is built
   add_dependencies(marian_cuda 3rd_party_installs)
-  # Add external libs to the public interface of the library
-  target_link_libraries(marian_cuda ${EXT_LIBS} ${CMAKE_THREAD_LIBS_INIT})
 
   # Add the CUDA Marian dependency to the core Marian target
   target_link_libraries(marian marian_cuda)
@@ -221,30 +233,28 @@ if (NOT COMPILE_LIBRARY_ONLY)
   # execution in MSFT internal tools FLO and Philly.
   # For Philly submission, we need statically-linked versions to deal with
   # library dependencies, so this target is only enabled for static builds.
-  if(USE_STATIC_LIBS)
-    add_custom_command(
-      OUTPUT "${CMAKE_BINARY_DIR}/marian.zip"
-      COMMAND zip -v -0 -j "${CMAKE_BINARY_DIR}/marian.zip"
-                  "${CMAKE_BINARY_DIR}/marian"
-                  "${CMAKE_BINARY_DIR}/marian-decoder"
-                  "${CMAKE_BINARY_DIR}/marian-scorer"
-                  "${CMAKE_BINARY_DIR}/marian-vocab"
-                  "${CMAKE_BINARY_DIR}/marian-conv"
-      DEPENDS marian_train marian_decoder marian_scorer marian_vocab marian_conv)
-    add_custom_target(marian_zip DEPENDS "${CMAKE_BINARY_DIR}/marian.zip")
+  add_custom_command(
+    OUTPUT "${CMAKE_BINARY_DIR}/marian.zip"
+    COMMAND zip -v -0 -j "${CMAKE_BINARY_DIR}/marian.zip"
+                "${CMAKE_BINARY_DIR}/marian"
+                "${CMAKE_BINARY_DIR}/marian-decoder"
+                "${CMAKE_BINARY_DIR}/marian-scorer"
+                "${CMAKE_BINARY_DIR}/marian-vocab"
+                "${CMAKE_BINARY_DIR}/marian-conv"
+    DEPENDS marian_train marian_decoder marian_scorer marian_vocab marian_conv)
+  add_custom_target(marian_zip DEPENDS "${CMAKE_BINARY_DIR}/marian.zip")
 
-    add_custom_command(
-      OUTPUT "${CMAKE_BINARY_DIR}/marian.tgz"
-      COMMAND tar -cvvzf "${CMAKE_BINARY_DIR}/marian.tgz" -C "${CMAKE_BINARY_DIR}"
-                  "marian"
-                  "marian-decoder"
-                  "marian-scorer"
-                  "marian-vocab"
-                  "marian-conv"
-      DEPENDS marian_train marian_decoder marian_scorer marian_vocab marian_conv)
-    add_custom_target(marian_tgz DEPENDS "${CMAKE_BINARY_DIR}/marian.tgz")
-    add_custom_target(philly DEPENDS marian_tgz marian_zip)
-  endif(USE_STATIC_LIBS)
+  add_custom_command(
+    OUTPUT "${CMAKE_BINARY_DIR}/marian.tgz"
+    COMMAND tar -cvvzf "${CMAKE_BINARY_DIR}/marian.tgz" -C "${CMAKE_BINARY_DIR}"
+                "marian"
+                "marian-decoder"
+                "marian-scorer"
+                "marian-vocab"
+                "marian-conv"
+    DEPENDS marian_train marian_decoder marian_scorer marian_vocab marian_conv)
+  add_custom_target(marian_tgz DEPENDS "${CMAKE_BINARY_DIR}/marian.tgz")
+  add_custom_target(philly DEPENDS marian_tgz marian_zip)
 
   if(COMPILE_SERVER)
     add_executable(marian_server command/marian_server.cpp)

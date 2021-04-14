@@ -31,6 +31,9 @@ protected:
   std::unordered_map<std::string, Expr> cache_;    // caching transformation of the encoder that should not be created again
   mutable/*lazy*/ std::vector<float> sinusoidalEmbeddingsFreq_, sinusoidalEmbeddingsOffs_;  // cached contributions to sinusoidal embeddings
 
+  bool depthScaling_{false}; // As recommended in the GPT-2 paper, down-scale layer weights by a factor of 1 / sqrt(depth);
+  size_t depth_{0}; // stateful depth monitoring, keep track during model construction in which layer depth we currently are. Used for depth-scaling in the formula above.
+
   // attention weights produced by step()
   // If enabled, it is set once per batch during training, and once per step during translation.
   // It can be accessed by getAlignments(). @TODO: move into a state or return-value object
@@ -91,6 +94,7 @@ public:
 
   }
 
+  Transformer(Ptr<ExpressionGraph> graph, Ptr<Options> options) : EncoderOrDecoderBase(graph, options) {}
 
   static Expr transposeTimeBatch(Expr input) { return transpose(input, {0, 2, 1, 3}); }
 
@@ -213,6 +217,8 @@ public:
       // layer normalization
       else if (op == 'n')
         output = layerNorm(output, prefix, "_pre");
+      else if (op == 'r')
+        output = rmsNorm(output, prefix, "_pre");
       else
         ABORT("Unknown pre-processing operation '{}'", op);
     }
@@ -231,12 +237,15 @@ public:
       // highway connection
       else if(op == 'h') {
         int dimModel = input->shape()[-1];
-        auto t = denseInline(prevInput, prefix, /*suffix=*/"h", dimModel);
+        auto initFn = inits::glorotUniform(true, true, depthScaling_ ? 1.f / sqrtf((float)depth_) : 1.f);
+        auto t = denseInline(prevInput, prefix, /*suffix=*/"h", dimModel, initFn);
         output = highway(output, prevInput, t);
       }
       // layer normalization
       else if(op == 'n')
         output = layerNorm(output, prefix);
+      else if(op == 'r')
+        output = rmsNorm(output, prefix);
       else
         ABORT("Unknown pre-processing operation '{}'", op);
     }
@@ -339,8 +348,9 @@ public:
                  bool saveAttentionWeights = false) {
     int dimModel = q->shape()[-1];
     // @TODO: good opportunity to implement auto-batching here or do something manually?
-    auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorotUniform());
+    auto Wq = graph_->param(prefix + "_Wq", {dimModel, dimHeads * dimHeadSize}, inits::glorotUniform(true, true, depthScaling_ ? 1.f / sqrtf((float)depth_) : 1.f));
     auto bq = graph_->param(prefix + "_bq", {       1, dimHeads * dimHeadSize}, inits::zeros());
+    
     auto qh = affine(q, Wq, bq);
     qh = SplitHeads(qh, dimHeads); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
 
@@ -354,7 +364,7 @@ public:
       kh = cache_[prefix + "_keys"];                                                   // then return cached tensor
     }
     else {
-      auto Wk = graph_->param(prefix + "_Wk", {dimModel, dimHeads * dimHeadSize}, inits::glorotUniform());
+      auto Wk = graph_->param(prefix + "_Wk", {dimModel, dimHeads * dimHeadSize}, inits::glorotUniform(true, true, depthScaling_ ? 1.f / sqrtf((float)depth_) : 1.f));
       auto bk = graph_->param(prefix + "_bk", {1,        dimHeads * dimHeadSize}, inits::zeros());
 
       kh = affine(keys, Wk, bk);     // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
@@ -368,7 +378,7 @@ public:
         && cache_[prefix + "_values"]->shape().elements() == values->shape().elements()) {
       vh = cache_[prefix + "_values"];
     } else {
-      auto Wv = graph_->param(prefix + "_Wv", {dimModel, dimHeads * dimHeadSize}, inits::glorotUniform());
+      auto Wv = graph_->param(prefix + "_Wv", {dimModel, dimHeads * dimHeadSize}, inits::glorotUniform(true, true, depthScaling_ ? 1.f / sqrtf((float)depth_) : 1.f));
       auto bv = graph_->param(prefix + "_bv", {1,        dimHeads * dimHeadSize}, inits::zeros());
 
       vh = affine(values, Wv, bv); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
@@ -388,11 +398,32 @@ public:
 
     bool project = !opt<bool>("transformer-no-projection");
     if(project || dimAtt != dimOut) {
-      auto Wo
-        = graph_->param(prefix + "_Wo", {dimAtt, dimOut}, inits::glorotUniform());
+      auto Wo = graph_->param(prefix + "_Wo", {dimAtt, dimOut}, inits::glorotUniform(true, true, depthScaling_ ? 1.f / sqrtf((float)depth_) : 1.f));
       auto bo = graph_->param(prefix + "_bo", {1, dimOut}, inits::zeros());
       output = affine(output, Wo, bo);
     }
+
+    return output;
+  }
+
+  // Reduce the encoder to a single sentence vector, here we just take the contextual embedding of the first word per sentence
+  // Replaces cross-attention in LASER-like models
+  Expr LayerPooling(std::string prefix,
+                    Expr input,            // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
+                    const Expr& values) {  // [-4: beam depth=1, -3: batch size, -2: max length (src or trg), -1: vector dim]
+    int dimModel = input->shape()[-1];
+    auto output = slice(values, -2, 0); // Select first word [-4: beam depth, -3: batch size, -2: 1, -1: vector dim]
+
+    int dimPool = output->shape()[-1];
+    bool project = !opt<bool>("transformer-no-projection");
+    if(project || dimPool != dimModel) {
+      auto Wo = graph_->param(prefix + "_Wo", {dimPool, dimModel}, inits::glorotUniform(true, true, depthScaling_ ? 1.f / sqrtf((float)depth_) : 1.f));
+      auto bo = graph_->param(prefix + "_bo", {1, dimModel}, inits::zeros());
+      output = affine(output, Wo, bo);  // [-4: beam depth, -3: batch size, -2: 1, -1: vector dim]
+    }
+
+    auto opsPost = opt<std::string>("transformer-postprocess");
+    output = postProcess(prefix + "_Wo", opsPost, output, input, 0.f);
 
     return output;
   }
@@ -462,7 +493,6 @@ public:
     auto opsPre = opt<std::string>("transformer-preprocess");
     auto output = preProcess(prefix + "_ffn", opsPre, input, dropProb);
 
-
     int dimFfn;
     if (prefix.find("encoder") != std::string::npos) {
       // LOG(info, "Inside encoder LayerFFN {} {}", prefix, layerNum  - 1);
@@ -476,21 +506,22 @@ public:
       dimFfn = opt<int>("transformer-dim-ffn"); // won't enter it but just in case, change to use it as default later
     }
 
+    auto actName = opt<std::string>("transformer-ffn-activation");
     int depthFfn = opt<int>("transformer-ffn-depth");
-    auto actFn = activationByName(opt<std::string>("transformer-ffn-activation"));
     float ffnDropProb
       = inference_ ? 0 : opt<float>("transformer-dropout-ffn");
 
     ABORT_IF(depthFfn < 1, "Filter depth {} is smaller than 1", depthFfn);
 
+    auto initFn = inits::glorotUniform(true, true, depthScaling_ ? 1.f / sqrtf((float)depth_) : 1.f);
+
     // the stack of FF layers
     for(int i = 1; i < depthFfn; ++i)
-      output = denseSelectedInline(output, prefix, /*suffix=*/std::to_string(i), dimFfn, actFn, ffnDropProb);
-    output = denseSelectedInline(output, prefix, /*suffix=*/std::to_string(depthFfn), dimModel);
+      output = denseInline(output, prefix, /*suffix=*/std::to_string(i), dimFfn, initFn, actName, ffnDropProb);
+    output = denseInline(output, prefix, /*suffix=*/std::to_string(depthFfn), dimModel, initFn);
 
     auto opsPost = opt<std::string>("transformer-postprocess");
-    output
-      = postProcess(prefix + "_ffn", opsPost, output, input, dropProb);
+    output = postProcess(prefix + "_ffn", opsPost, output, input, dropProb);
 
     return output;
   }
@@ -508,19 +539,21 @@ public:
     // FFN
     int dimAan   = opt<int>("transformer-dim-aan");
     int depthAan = opt<int>("transformer-aan-depth");
-    auto actFn = activationByName(opt<std::string>("transformer-aan-activation"));
+    auto actName = opt<std::string>("transformer-aan-activation");
     float aanDropProb = inference_ ? 0 : opt<float>("transformer-dropout-ffn");
+
+    auto initFn = inits::glorotUniform(true, true, depthScaling_ ? 1.f / sqrtf((float)depth_) : 1.f);
 
     // the stack of AAN layers
     for(int i = 1; i < depthAan; ++i)
-      y = denseInline(y, prefix, /*suffix=*/std::to_string(i), dimAan, actFn, aanDropProb);
+      y = denseInline(y, prefix, /*suffix=*/std::to_string(i), dimAan, initFn, actName, aanDropProb);
     if(y->shape()[-1] != dimModel) // bring it back to the desired dimension if needed
-      y = denseInline(y, prefix, std::to_string(depthAan), dimModel);
+      y = denseInline(y, prefix, std::to_string(depthAan), dimModel, initFn);
 
     bool noGate = opt<bool>("transformer-aan-nogate");
     if(!noGate) {
-      auto gi = denseInline(x, prefix, /*suffix=*/"i", dimModel, (ActivationFunction*)sigmoid);
-      auto gf = denseInline(y, prefix, /*suffix=*/"f", dimModel, (ActivationFunction*)sigmoid);
+      auto gi = denseInline(x, prefix, /*suffix=*/"i", dimModel, initFn, "sigmoid");
+      auto gf = denseInline(y, prefix, /*suffix=*/"f", dimModel, initFn, "sigmoid");
       y = gi * x + gf * y;
     }
 
@@ -598,6 +631,7 @@ class EncoderTransformer : public Transformer<EncoderBase> {
   typedef Transformer<EncoderBase> Base;
   using Base::Base;
 public:
+
    void setNumHeads() override {
     std::string modelPath;
     if (options_->has("models"))
@@ -608,6 +642,13 @@ public:
     auto encLayers = opt<int>("enc-depth");
     loadNumHeads(modelPath, "encoder", encLayers);
   }
+
+  EncoderTransformer(Ptr<ExpressionGraph> graph, Ptr<Options> options) : Transformer(graph, options) {
+    depthScaling_ = options_->get<bool>("transformer-depth-scaling", false);
+    depth_ = 1;
+  }
+
+  virtual ~EncoderTransformer() {}
 
   virtual Ptr<EncoderState> build(Ptr<ExpressionGraph> graph,
                                   Ptr<data::CorpusBatch> batch) override {
@@ -649,6 +690,8 @@ public:
     // This is the Transformer Encoder stack.
     auto encDepth = opt<int>("enc-depth");
     for(int i = 1; i <= encDepth; ++i) {
+      depth_ = i;
+
       layer = LayerAttention(prefix_ + "_l" + std::to_string(i) + "_self",
                              layer, // query
                              layer, // keys
@@ -745,6 +788,11 @@ public:
   
       auto decLayers = opt<int>("dec-depth");
       loadNumHeads(modelPath, "decoder", decLayers);
+  }
+
+  DecoderTransformer(Ptr<ExpressionGraph> graph, Ptr<Options> options) : Transformer(graph, options) {
+    depthScaling_ = options_->get<bool>("transformer-depth-scaling", false);
+    depth_ = 1;
   }
 
   virtual Ptr<DecoderState> startState(
@@ -861,6 +909,8 @@ public:
              decDepth);
 
     for(int i = 0; i < decDepth; ++i) {
+      depth_ = i + 1;
+
       std::string layerNo = std::to_string(i + 1);
       if (!tiedLayers.empty())
         layerNo = std::to_string(tiedLayers[i]);

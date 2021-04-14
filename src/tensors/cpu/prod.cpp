@@ -7,8 +7,17 @@
 #include "tensors/tensor.h"
 #include "tensors/tensor_allocator.h"
 
+#if MKL_FOUND
+#include <mkl.h>
+#else
+#if BLAS_FOUND
+#include <cblas.h>
+#endif
+#endif
+
+#include "integer_common.h"
 #include "prod_blas.h"
-#include "sharp/int_gemm.h"
+
 
 namespace marian {
 
@@ -60,6 +69,19 @@ void Prod(marian::Tensor C,
 #endif
 }
 
+// dummy implementation, computeType doesn't do anything on CPU
+void Prod(marian::Tensor C,
+          const marian::Tensor& A,
+          const marian::Tensor& B,
+          bool transA,
+          bool transB,
+          float beta,
+          float scalar,
+          Type computeType) {
+  computeType; // make compiler happy
+  cpu::Prod(C, A, B, transA, transB, beta, scalar);
+}
+
 void ProdBatched(marian::Tensor C,
                  Ptr<Allocator> /*allocator*/,
                  const marian::Tensor A,
@@ -96,7 +118,7 @@ void ProdBatched(marian::Tensor C,
   auto strideC = n * m;
 
   auto batchC = std::max(batchA, batchB);
-#if 0 // TODO Accuracy regression. Batched GEMM generate different output. Investigating and disable for now.
+#if MKL_FOUND
   CBLAS_TRANSPOSE transA_forarr = CblasNoTrans;
   CBLAS_TRANSPOSE transB_forarr = CblasNoTrans;
 
@@ -187,8 +209,25 @@ void ProdWithBias(marian::Tensor C,
                   float beta,
                   float scalar) {
   cpu::Prod(C, A, B, transA, transB, beta, scalar);
-  cpu::int16::AddBias(C, bias);
+  cpu::integer::AddBias(C, bias);
 }
+
+void Affine(marian::Tensor C,
+            Ptr<Allocator> /*allocator*/,
+            const marian::Tensor& A,
+            const marian::Tensor& B,
+            const marian::Tensor& bias,
+            bool transA,
+            bool transB,
+            float beta,
+            float scalar,
+            bool reluPostprocess) {
+  using namespace functional;
+  ProdWithBias(C, A, B, bias, transA, transB, beta, scalar);
+  if(reluPostprocess)
+    cpu::Element(_1 = ReLU(_1), C); // @TODO: also fuse with AddBias
+}
+
 
 void CSRProd(marian::Tensor C,
              Ptr<Allocator> /*allocator*/,

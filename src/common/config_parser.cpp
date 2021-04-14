@@ -134,8 +134,9 @@ void ConfigParser::addOptionsGeneral(cli::CLIWrapper& cli) {
     "Suppress logging for translation");
   cli.add<size_t>("--seed",
     "Seed for all random number generators. 0 means initialize randomly");
-  cli.add<float>("--clip-gemm",
-    "If not 0 clip GEMM input values to +/- arg");
+  cli.add<bool>("--check-nan",
+    "Check for NaNs or Infs in forward and backward pass. Will abort when found. "
+    "This is a diagnostic option that will slow down computation significantly");
   cli.add<bool>("--interpolate-env-vars",
     "allow the use of environment variables in paths, of the form ${VAR_NAME}");
   cli.add<bool>("--relative-paths",
@@ -349,13 +350,6 @@ void ConfigParser::addOptionsModel(cli::CLIWrapper& cli) {
         "Dropout source words (0 = no dropout)");
     cli.add<float>("--dropout-trg",
         "Dropout target words (0 = no dropout)");
-    cli.add<float>("--grad-dropping-rate",
-        "Gradient Dropping rate (0 = no gradient Dropping)");
-    cli.add<float>("--grad-dropping-momentum",
-        "Gradient Dropping momentum decay rate (0.0 to 1.0)");
-    cli.add<size_t>("--grad-dropping-warmup",
-        "Do not apply gradient dropping for the first arg steps",
-        100);
     cli.add<float>("--transformer-dropout",
         "Dropout between transformer layers (0 = no dropout)");
     cli.add<float>("--transformer-dropout-attention",
@@ -371,7 +365,7 @@ void ConfigParser::addOptionsTraining(cli::CLIWrapper& cli) {
   auto previous_group = cli.switchGroup("Training options");
   // clang-format off
   cli.add<std::string>("--cost-type", // @TODO: rename to loss-type
-      "Optimization criterion: ce-mean, ce-mean-words, ce-sum, perplexity", "ce-mean");
+      "Optimization criterion: ce-mean, ce-mean-words, ce-sum, perplexity", "ce-sum");
   cli.add<std::string>("--multi-loss-type",
       "How to accumulate multi-objective losses: sum, scaled, mean", "sum");
   cli.add<bool>("--unlikelihood-loss",
@@ -396,25 +390,36 @@ void ConfigParser::addOptionsTraining(cli::CLIWrapper& cli) {
   cli.add<size_t>("--sentencepiece-max-lines",
       "Maximum lines to train SentencePiece vocabulary, selected with sampling from all data. "
       "When set to 0 all lines are going to be used.",
-      10000000);
+      2000000);
 #endif
   // scheduling options
+
+  // @TODO: these should be re-defined as aliases for `--after` but the current frame work matches on value, so not doable.
   cli.add<size_t>("--after-epochs,-e",
-      "Finish after this many epochs, 0 is infinity");
+      "Finish after this many epochs, 0 is infinity (deprecated, '--after-epochs N' corresponds to '--after Ne')"); // @TODO: replace with alias
   cli.add<size_t>("--after-batches",
-      "Finish after this many batch updates, 0 is infinity");
+      "Finish after this many batch updates, 0 is infinity (deprecated, '--after-batches N' corresponds to '--after Nu')"); // @TODO: replace with alias
+
+  cli.add<std::string>("--after,-a",
+      "Finish after this many chosen training units, 0 is infinity (e.g. 100e = 100 epochs, 10Gt = 10 billion target labels, 100Ku = 100,000 updates",
+      "0e");
   cli.add<std::string/*SchedulerPeriod*/>("--disp-freq",
       "Display information every  arg  updates (append 't' for every  arg  target labels)",
       "1000u");
   cli.add<size_t>("--disp-first",
       "Display information for the first  arg  updates");
   cli.add<bool>("--disp-label-counts",
-      "Display label counts when logging loss progress");
+      "Display label counts when logging loss progress",
+      true);
 //   cli.add<int>("--disp-label-index",
 //       "Display label counts based on i-th input stream (-1 is last)", -1);
   cli.add<std::string/*SchedulerPeriod*/>("--save-freq",
       "Save model file every  arg  updates (append 't' for every  arg  target labels)",
       "10000u");
+  cli.add<std::vector<std::string>>("--logical-epoch",
+      "Redefine logical epoch counter as multiple of data epochs (e.g. 1e), updates (e.g. 100Ku) or labels (e.g. 1Gt). "
+      "Second parameter defines width of fractional display, 0 by default.",
+      {"1e", "0"});
 
   addSuboptionsInputLength(cli);
   addSuboptionsTSV(cli);
@@ -471,7 +476,7 @@ void ConfigParser::addOptionsTraining(cli::CLIWrapper& cli) {
      "epoch+stalled");
   cli.add<std::vector<size_t>>("--lr-decay-start",
      "The first number of (epoch, batches, stalled) validations to start learning rate decaying (tuple)",
-     {10,1});
+     {10, 1});
   cli.add<size_t>("--lr-decay-freq",
      "Learning rate decaying frequency for batches, requires --lr-decay-strategy to be batches",
      50000);
@@ -535,24 +540,35 @@ void ConfigParser::addOptionsTraining(cli::CLIWrapper& cli) {
   // mixed precision training
   cli.add<bool>("--fp16",
       "Shortcut for mixed precision training with float16 and cost-scaling, "
-      "corresponds to: --precision float16 float32 float32 --cost-scaling 7 2000 2 0.05 10 1");
+      "corresponds to: --precision float16 float32 --cost-scaling 0 1000 2 0.05 10 1e-5f");
   cli.add<std::vector<std::string>>("--precision",
       "Mixed precision training for forward/backward pass and optimizaton. "
-      "Defines types for: forward/backward, optimization, saving.",
-      {"float32", "float32", "float32"});
+      "Defines types for: forward/backward pass, optimization.",
+      {"float32", "float32"});
   cli.add<std::vector<std::string>>("--cost-scaling",
       "Dynamic cost scaling for mixed precision training: "
       "power of 2, scaling window, scaling factor, tolerance, range, minimum factor")
-    ->implicit_val("7.f 2000 2.f 0.05f 10 1.f");
-  cli.add<bool>("--normalize-gradient",
-      "Normalize gradient by multiplying with no. devices / total labels");
+      ->implicit_val("0.f 1000 2.f 0.05f 10 1e-5f");
+  cli.add<size_t>("--gradient-norm-average-window",
+      "Window size over which the exponential average of the gradient norm is recorded (for logging and scaling). "
+      "After this many updates about 90% of the mass of the exponential average comes from these updates",
+      100);
+  cli.add<std::vector<std::string>>("--dynamic-gradient-scaling", 
+      "Re-scale gradient to have average gradient norm if (log) gradient norm diverges from average by arg1 sigmas. "
+      "If arg2 = \"log\" the statistics are recorded for the log of the gradient norm else use plain norm")
+      ->implicit_val("2.f log");
+  cli.add<bool>("--check-gradient-nan", 
+      "Skip parameter update in case of NaNs in gradient");
+  cli.add<bool>("--normalize-gradient", 
+      "Normalize gradient by multiplying with no. devices / total labels (not recommended and to be removed in the future)");
 
-  // multi-node training
-  cli.add<bool>("--multi-node",
-     "Enable asynchronous multi-node training through MPI (and legacy sync if combined with --sync-sgd)");
-  cli.add<bool>("--multi-node-overlap",
-     "Overlap model computations with MPI communication",
-     true);
+  cli.add<std::vector<std::string>>("--train-embedder-rank",
+      "Override model configuration and train a embedding similarity ranker with the model encoder, "
+      "parameters encode margin and an optional normalization factor")
+    ->implicit_val("0.3f 0.0f");
+
+  // model quantization training
+  addSuboptionsQuantization(cli);
 
   // add ULR settings
   addSuboptionsULR(cli);
@@ -574,7 +590,8 @@ void ConfigParser::addOptionsValidation(cli::CLIWrapper& cli) {
       "10000u");
   cli.add<std::vector<std::string>>("--valid-metrics",
       "Metric to use during validation: cross-entropy, ce-mean-words, perplexity, valid-script, "
-      "translation, bleu, bleu-detok. Multiple metrics can be specified",
+      "translation, bleu, bleu-detok (deprecated, same as bleu), bleu-segmented, chrf. "
+      "Multiple metrics can be specified",
       {"cross-entropy"});
   cli.add<bool>("--valid-reset-stalled",
      "Reset all stalled validation metrics when the training is restarted");
@@ -658,6 +675,8 @@ void ConfigParser::addOptionsTranslation(cli::CLIWrapper& cli) {
       "Subtract (arg * translation length) from translation score");
   cli.add<bool>("--allow-unk",
       "Allow unknown words to appear in output");
+  cli.add<bool>("--allow-special",
+      "Allow special symbols to appear in output, e.g. for SentencePiece with byte-fallback do not suppress the newline symbol");
   cli.add<bool>("--n-best",
       "Generate n-best list");
   cli.add<std::string>("--alignment",
@@ -665,6 +684,9 @@ void ConfigParser::addOptionsTranslation(cli::CLIWrapper& cli) {
     ->implicit_val("1");
   cli.add<bool>("--word-scores",
       "Print word-level scores. One score per subword unit, not normalized even if --normalize");
+  cli.add<std::string/*SchedulerPeriod*/>("--stat-freq",
+    "Display speed information every arg mini-batches. Disabled by default with 0, set to value larger than 0 to activate",
+    "0");
 #ifdef USE_SENTENCEPIECE
   cli.add<bool>("--no-spm-decode",
       "Keep the output segmented into SentencePiece subwords");
@@ -675,15 +697,13 @@ void ConfigParser::addOptionsTranslation(cli::CLIWrapper& cli) {
   addSuboptionsDevices(cli);
   addSuboptionsBatching(cli);
 
-  cli.add<bool>("--optimize",
-      "Optimize speed aggressively sacrificing memory or precision");
-  cli.add<bool>("--skip-cost",
-      "Ignore model cost during translation, not recommended for beam-size > 1");
   cli.add<bool>("--fp16",
       "Shortcut for mixed precision inference with float16, corresponds to: --precision float16");
   cli.add<std::vector<std::string>>("--precision",
       "Mixed precision for inference, set parameter type in expression graph",
       {"float32"});
+  cli.add<bool>("--skip-cost",
+    "Ignore model cost during translation, not recommended for beam-size > 1");
 
   cli.add<std::vector<std::string>>("--shortlist",
      "Use softmax shortlist: path first best prune");
@@ -741,8 +761,6 @@ void ConfigParser::addOptionsScoring(cli::CLIWrapper& cli) {
   addSuboptionsDevices(cli);
   addSuboptionsBatching(cli);
 
-  cli.add<bool>("--optimize",
-      "Optimize speed aggressively sacrificing memory or precision");
   cli.add<bool>("--fp16",
       "Shortcut for mixed precision inference with float16, corresponds to: --precision float16");
   cli.add<std::vector<std::string>>("--precision",
@@ -780,12 +798,10 @@ void ConfigParser::addOptionsEmbedding(cli::CLIWrapper& cli) {
   addSuboptionsDevices(cli);
   addSuboptionsBatching(cli);
 
-  cli.add<bool>("--optimize",
-      "Optimize speed aggressively sacrificing memory or precision");
   cli.add<bool>("--fp16",
       "Shortcut for mixed precision inference with float16, corresponds to: --precision float16");
   cli.add<std::vector<std::string>>("--precision",
-      "Mixed precision for inference, set parameter type in expression graph",
+      "Mixed precision for inference, set parameter type in expression graph. Supported values: float32, float16",
       {"float32"});
 
   cli.switchGroup(previous_group);
@@ -800,9 +816,17 @@ void ConfigParser::addSuboptionsDevices(cli::CLIWrapper& cli) {
   cli.add<size_t>("--num-devices",
       "Number of GPUs to use for this process. Defaults to length(devices) or 1");
 #ifdef USE_NCCL
-  if(mode_ == cli::mode::training)
+  if(mode_ == cli::mode::training) {
     cli.add<bool>("--no-nccl",
       "Disable inter-GPU communication via NCCL");
+    cli.add<std::string>("--sharding",
+      "When using NCCL and MPI for multi-process training use 'global' (default, less memory usage) "
+      "or 'local' (more memory usage but faster) sharding",
+      {"global"});
+    cli.add<std::string/*SchedulerPeriod*/>("--sync-freq",
+      "When sharding is local sync all shards across processes once every n steps (possible units u=updates, t=target labels, e=epochs)",
+      "200u");
+  }
 #endif
 #ifdef CUDA_FOUND
   cli.add<size_t>("--cpu-threads",
@@ -860,7 +884,7 @@ void ConfigParser::addSuboptionsBatching(cli::CLIWrapper& cli) {
     cli.add<size_t>("--english-title-case-every",
         "When forming minibatches, preprocess every Nth line on the fly to title-case. Assumes English (ASCII only)");
 
-    cli.add<int>("--mini-batch-words-ref",
+    cli.add<size_t>("--mini-batch-words-ref",
         "If given, the following hyper parameters are adjusted as-if we had this mini-batch size: "
         "--learn-rate, --optimizer-params, --exponential-smoothing, --mini-batch-warmup");
     cli.add<std::string/*SchedulerPeriod*/>("--mini-batch-warmup",
@@ -869,6 +893,9 @@ void ConfigParser::addSuboptionsBatching(cli::CLIWrapper& cli) {
         {"0"});
     cli.add<bool>("--mini-batch-track-lr",
         "Dynamically track mini-batch size inverse to actual learning rate (not considering lr-warmup)");
+    cli.add<bool>("--mini-batch-round-up",
+        "Round up batch size to next power of 2 for more efficient training, but this can make batch size less stable. Disable with --mini-batch-round-up=false",
+        true);
   }
   // clang-format on
 }
@@ -922,10 +949,25 @@ void ConfigParser::addSuboptionsULR(cli::CLIWrapper& cli) {
   // clang-format on
 }
 
+void ConfigParser::addSuboptionsQuantization(cli::CLIWrapper& cli) {
+  // clang-format off
+  // model quantization training
+  cli.add<size_t>("--quantize-bits",
+     "Number of bits to compress model to. Set to 0 to disable",
+      0);
+  cli.add<size_t>("--quantize-optimization-steps",
+     "Adjust quantization scaling factor for N steps",
+     0);
+  cli.add<bool>("--quantize-log-based",
+     "Uses log-based quantization");
+  cli.add<bool>("--quantize-biases",
+     "Apply quantization to biases");
+  // clang-format on
+}
 
 cli::mode ConfigParser::getMode() const { return mode_; }
 
-Ptr<Options> ConfigParser::parseOptions(int argc, char** argv, bool doValidate){
+Ptr<Options> ConfigParser::parseOptions(int argc, char** argv, bool doValidate) {
   cmdLine_ = escapeCmdLine(argc,argv);
 
   // parse command-line options and fill wrapped YAML config
@@ -1039,6 +1081,40 @@ Ptr<Options> ConfigParser::parseOptions(int argc, char** argv, bool doValidate){
                           "Extracting 'alignment' and 'weight' types from input-types failed.");
     }
   }
+
+#if 0 // @TODO: remove once fully deprecated
+  // Convert --after-batches N to --after Nu and --after-epochs N to --after Ne, different values get concatenated with ","
+  if(mode_ == cli::mode::training && get<size_t>("after-epochs") > 0) {
+    auto afterValue = get<size_t>("after-epochs");
+    LOG(info, "\"--after-epochs {}\" is deprecated, please use \"--after {}e\" instead (\"e\" stands for epoch)", afterValue, afterValue);
+    YAML::Node config;
+    std::string prevAfter = get<std::string>("after");
+    std::string converted = std::to_string(afterValue) + "e";
+    if(prevAfter != "0e")
+      config["after"] = prevAfter + "," + converted;
+    else
+      config["after"] = converted;
+    if(!config.IsNull())
+      cli_.updateConfig(config,
+                        cli::OptionPriority::CommandLine,
+                        "Could not update --after with value from --after-epochs");
+  }
+  if(mode_ == cli::mode::training && get<size_t>("after-batches") > 0) {
+    auto afterValue = get<size_t>("after-batches");
+    LOG(info, "\"--after-batches {}\" is deprecated, please use \"--after {}u\" instead (\"u\" stands for updates)", afterValue, afterValue);
+    YAML::Node config;
+    std::string prevAfter = get<std::string>("after");
+    std::string converted = std::to_string(afterValue) + "u";
+    if(prevAfter != "0e")
+      config["after"] = prevAfter + "," + converted;
+    else
+      config["after"] = converted;
+    if(!config.IsNull())
+      cli_.updateConfig(config,
+                        cli::OptionPriority::CommandLine,
+                        "Could not update --after with value from --after-updates");
+  }
+#endif
 
   cli_.parseAliases();
   auto opts = New<Options>();

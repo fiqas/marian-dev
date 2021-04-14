@@ -120,6 +120,21 @@ public:
     // df/dB += alpha * dot(op(A).T, D)
     // beta set to 1.0 in gemm, C = alpha * dot(op(A), op(B)) + beta * C
     // to sum gradients from different graph parts
+    
+    auto isParameter = [](Expr p) {
+      return std::dynamic_pointer_cast<ParamNode>(p) != nullptr;
+    };
+
+    // if child A is not a parameter (i.e. activations) use computeType float32 for accumulation
+    Type computeTypeA = child(0)->trainable() ? child(0)->grad()->type() : Type::float32;
+    if(!isParameter(child(0)) && computeTypeA == Type::float16)
+      computeTypeA = Type::float32;
+
+    // if child B is not a parameter (i.e. activations) use computeType float32 for accumulation
+    Type computeTypeB = child(1)->trainable() ? child(1)->grad()->type() : Type::float32;
+    if(!isParameter(child(1)) && computeTypeB == Type::float16)
+      computeTypeB = Type::float32;
+
     if(!transA_ && transB_)
       return {NodeOp(Prod(child(0)->grad(),
                           adj_,
@@ -127,14 +142,14 @@ public:
                           false,
                           false,
                           1.0,
-                          scalar_)),
+                          scalar_, computeTypeA)),
               NodeOp(Prod(child(1)->grad(),
                           adj_,
                           child(0)->val(),
                           true,
                           false,
                           1.0,
-                          scalar_))};
+                          scalar_, computeTypeB))};
 
     if(transA_ && !transB_)
       return {NodeOp(Prod(child(0)->grad(),
@@ -143,14 +158,14 @@ public:
                           false,
                           true,
                           1.0,
-                          scalar_)),
+                          scalar_, computeTypeA)),
               NodeOp(Prod(child(1)->grad(),
                           child(0)->val(),
                           adj_,
                           false,
                           false,
                           1.0,
-                          scalar_))};
+                          scalar_, computeTypeB))};
 
     if(transA_ && transB_)
       return {NodeOp(Prod(child(0)->grad(),
@@ -159,14 +174,14 @@ public:
                           true,
                           true,
                           1.0,
-                          scalar_)),
+                          scalar_, computeTypeA)),
               NodeOp(Prod(child(1)->grad(),
                           adj_,
                           child(0)->val(),
                           true,
                           true,
                           1.0,
-                          scalar_))};
+                          scalar_, computeTypeB))};
 
     return {NodeOp(Prod(child(0)->grad(),
                         adj_,
@@ -174,14 +189,14 @@ public:
                         false,
                         true,
                         1.0,
-                        scalar_)),
+                        scalar_, computeTypeA)),
             NodeOp(Prod(child(1)->grad(),
                         child(0)->val(),
                         adj_,
                         true,
                         false,
                         1.0,
-                        scalar_))};
+                        scalar_, computeTypeB))};
   }
 
   const std::string type() override { return "dot"; }
@@ -251,17 +266,18 @@ public:
 
   NodeOps forwardOps() override {
     using namespace functional;
-
+    
     return {
-      NodeOp(
-          Prod(val_,
-               child(0)->val(),
-               child(1)->val(),
-               transA_,
-               transB_,
-               0.f,
-               scalar_);
-          Prod(val_, child(3)->val(), child(2)->val(), false, false, 1.f, 1.f))
+      NodeOp(Affine(val_,
+                    graph()->allocator(),
+                    child(0)->val(),
+                    child(1)->val(),
+                    child(2)->val(),
+                    transA_,
+                    transB_,
+                    0.f,
+                    scalar_,
+                    /*doRelu=*/false))
     };
   }
 
@@ -271,8 +287,27 @@ public:
     // df/dB += alpha * dot(op(A).T, D)
     // beta set to 1.0 in gemm, C = alpha * dot(op(A), op(B)) + beta * C
     // to sum gradients from different graph parts
-    using namespace functional;
 
+    auto isParameter = [](Expr p) {
+      return std::dynamic_pointer_cast<ParamNode>(p) != nullptr;
+    };
+
+    // if child A is not a parameter (i.e. activations) use computeType float32 for accumulation
+    Type computeTypeA = child(0)->trainable() ? child(0)->grad()->type() : Type::float32;
+    if(!isParameter(child(0)) && computeTypeA == Type::float16)
+      computeTypeA = Type::float32;
+
+    // if child B is not a parameter (i.e. activations) use computeType float32 for accumulation
+    Type computeTypeB = child(1)->trainable() ? child(1)->grad()->type() : Type::float32;
+    if(!isParameter(child(1)) && computeTypeB == Type::float16)
+      computeTypeB = Type::float32;
+
+    // if child C (bias) is not a parameter (i.e. activations) use computeType float32 for accumulation
+    Type computeTypeC = child(2)->trainable() ? child(2)->grad()->type() : Type::float32;
+    if(!isParameter(child(2)) && computeTypeC == Type::float16)
+      computeTypeC = Type::float32;
+
+    // We reduce bias gradients with a matrix multiply
     if(!transA_ && transB_)
       return {
           NodeOp(Prod(child(0)->grad(),
@@ -281,16 +316,15 @@ public:
                       false,
                       false,
                       1.0,
-                      scalar_)),
+                      scalar_, computeTypeA)),
           NodeOp(Prod(child(1)->grad(),
                       adj_,
                       child(0)->val(),
                       true,
                       false,
                       1.0,
-                      scalar_)),
-          NodeOp(Prod(
-              child(2)->grad(), child(3)->val(), adj_, true, false, 0.f, 1.f))
+                      scalar_, computeTypeB)),
+          NodeOp(Prod(child(2)->grad(), child(3)->val(), adj_, true, false, 0.f, 1.f, computeTypeC))
       };
 
     if(transA_ && !transB_)
@@ -301,16 +335,15 @@ public:
                       false,
                       true,
                       1.0,
-                      scalar_)),
+                      scalar_, computeTypeA)),
           NodeOp(Prod(child(1)->grad(),
                       child(0)->val(),
                       adj_,
                       false,
                       false,
                       1.0,
-                      scalar_)),
-          NodeOp(Prod(
-              child(2)->grad(), child(3)->val(), adj_, true, false, 0.f, 1.f))
+                      scalar_, computeTypeB)),
+          NodeOp(Prod(child(2)->grad(), child(3)->val(), adj_, true, false, 0.f, 1.f, computeTypeC))
       };
 
     if(transA_ && transB_)
@@ -321,16 +354,15 @@ public:
                       true,
                       true,
                       1.0,
-                      scalar_)),
+                      scalar_, computeTypeA)),
           NodeOp(Prod(child(1)->grad(),
                       adj_,
                       child(0)->val(),
                       true,
                       true,
                       1.0,
-                      scalar_)),
-          NodeOp(Prod(
-              child(2)->grad(), child(3)->val(), adj_, true, false, 0.f, 1.f))
+                      scalar_, computeTypeB)),
+          NodeOp(Prod(child(2)->grad(), child(3)->val(), adj_, true, false, 0.f, 1.f, computeTypeC))
       };
 
     return {
@@ -340,16 +372,15 @@ public:
                     false,
                     true,
                     1.0,
-                    scalar_)),
+                    scalar_, computeTypeA)),
         NodeOp(Prod(child(1)->grad(),
                     child(0)->val(),
                     adj_,
                     true,
                     false,
                     1.0,
-                    scalar_)),
-        NodeOp(Prod(
-            child(2)->grad(), child(3)->val(), adj_, true, false, 0.f, 1.f))
+                    scalar_, computeTypeB)),
+        NodeOp(Prod(child(2)->grad(), child(3)->val(), adj_, true, false, 0.f, 1.f, computeTypeC))
     };
   }
 
@@ -378,6 +409,97 @@ public:
     return true;
   }
 
+};
+
+class AffineWithReluNodeOp : public NaryNodeOp {
+private:
+  friend class SerializationHelpers;
+  bool transA_;
+  bool transB_;
+  float scalar_;
+
+public:
+  AffineWithReluNodeOp(Expr a, 
+                       Expr b, 
+                       Expr bias,
+                       bool transA,
+                       bool transB,
+                       float scalar)
+      : NaryNodeOp({a, b, bias}, newShape(a, b, transA, transB)),
+        transA_(transA),
+        transB_(transB),
+        scalar_(scalar) {
+    ABORT_IF(!graph()->isInference() || graph()->getDeviceId().type != DeviceType::gpu,
+             "AffineWithReluNodeOp currently only supported for inference on GPU");
+  }
+
+  Shape newShape(Expr a, Expr b, bool transA, bool transB) {
+    auto shapeA = a->shape();
+    if(transA) {
+      shapeA.set(shapeA.size() - 2, a->shape()[shapeA.size() - 1]);
+      shapeA.set(shapeA.size() - 1, a->shape()[shapeA.size() - 2]);
+    }
+
+    auto shapeB = b->shape();
+    if(transB) {
+      shapeB.set(shapeB.size() - 2, b->shape()[shapeB.size() - 1]);
+      shapeB.set(shapeB.size() - 1, b->shape()[shapeB.size() - 2]);
+    }
+
+    Shape outShape = shapeA;
+    outShape.set(outShape.size() - 1, shapeB[shapeB.size() - 1]);
+    ABORT_IF(shapeA[shapeA.size() - 1] != shapeB[shapeB.size() - 2],
+             "Matrix product requires inner dimensions to match in {}{} * {}{}", std::string(shapeA), transA, std::string(shapeB), transB);
+    return outShape;
+  }
+
+  NodeOps forwardOps() override {
+    ABORT_IF(!graph()->isInference() || graph()->getDeviceId().type != DeviceType::gpu,
+             "AffineWithReluNodeOp currently only supported for inference on GPU");
+    
+    return {
+      NodeOp(Affine(val_,
+                    graph()->allocator(),
+                    child(0)->val(),
+                    child(1)->val(),
+                    child(2)->val(),
+                    transA_,
+                    transB_,
+                    0.f,
+                    scalar_,
+                    /*doRelu=*/true))
+    };
+  }
+
+  NodeOps backwardOps() override {
+    ABORT("AffineWithReluNodeOp cannot be used for training??");
+    return {};
+  }
+
+  const std::string type() override { return "affineWithRelu"; }
+
+  virtual size_t hash() override {
+    size_t seed = NaryNodeOp::hash();
+    util::hash_combine(seed, transA_);
+    util::hash_combine(seed, transB_);
+    util::hash_combine(seed, scalar_);
+    return seed;
+  }
+
+  virtual bool equal(Expr node) override {
+    if(!NaryNodeOp::equal(node))
+      return false;
+    auto cnode = std::dynamic_pointer_cast<AffineWithReluNodeOp>(node);
+    if(!cnode)
+      return false;
+    if(transA_ != cnode->transA_)
+      return false;
+    if(transB_ != cnode->transB_)
+      return false;
+    if(scalar_ != cnode->scalar_)
+      return false;
+    return true;
+  }
 };
 
 class DotBatchedNodeOp : public NaryNodeOp {
@@ -547,6 +669,8 @@ public:
       transS_(transS), swapOperands_(swapOperands) {
     matchOrAbort<IndexType>(S_indices->value_type());
     matchOrAbort<IndexType>(S_offsets->value_type());
+
+    ABORT_IF(swapOperands_, "Implementation for this is wonky, if you use this tell us.");
   }
 
   Shape newShape(const Shape& S_shape, Expr S_values, Expr S_indices, Expr S_offsets, Expr D, bool transS, bool swapOperands) {
@@ -1072,9 +1196,14 @@ private:
 // For each vocabulary item v, the only non-zero element in a row in the sum is the item
 // that matches the label indexed by i (the picked element).
 // C = sum_{v in V}(-logsoftmax(A) * delta(v, i) = -logsoftmax(A)[i]
-struct CrossEntropyNodeOp : public NaryNodeOp {
-  CrossEntropyNodeOp(Expr a, Expr indices)
-    : NaryNodeOp({a, indices}, newShape(a), a->value_type()) {
+class CrossEntropyNodeOp : public NaryNodeOp {
+private:
+  float labelSmoothingAlpha_;
+
+public:
+  CrossEntropyNodeOp(Expr a, Expr indices, float labelSmoothingAlpha, Type outputType = Type::float32)
+    : NaryNodeOp({a, indices}, newShape(a), outputType),
+      labelSmoothingAlpha_(labelSmoothingAlpha) {
     matchOrAbort<IndexType>(indices->value_type());
     int rows   = a->shape().elements() / a->shape()[-1];
     int labels = indices->shape().elements();
@@ -1088,12 +1217,29 @@ struct CrossEntropyNodeOp : public NaryNodeOp {
   }
 
   NodeOps forwardOps() override {
-    return {NodeOp(CrossEntropyPick(val_, child(0)->val(), child(1)->val()))};
+    return {NodeOp(CrossEntropyPick(val_, child(0)->val(), child(1)->val(), labelSmoothingAlpha_))};
   }
 
   NodeOps backwardOps() override {
     return {NodeOp(CrossEntropyPickBackward(
-        child(0)->grad(), adj_, child(0)->val(), child(1)->val()))};
+        child(0)->grad(), adj_, child(0)->val(), child(1)->val(), labelSmoothingAlpha_))};
+  }
+
+  virtual size_t hash() override {
+    size_t seed = NaryNodeOp::hash();
+    util::hash_combine(seed, labelSmoothingAlpha_);
+    return seed;
+  }
+
+  virtual bool equal(Expr node) override {
+    if(!NaryNodeOp::equal(node))
+      return false;
+    auto cnode = std::dynamic_pointer_cast<CrossEntropyNodeOp>(node);
+    if(!cnode)
+      return false;
+    if(labelSmoothingAlpha_ != cnode->labelSmoothingAlpha_)
+      return false;
+    return true;
   }
 
   const std::string type() override { return "x-ent"; }
@@ -1222,6 +1368,64 @@ private:
   friend class SerializationHelpers; // @TODO: use the same name for this as SqrtNodeOp
   float eps_;
 };
+
+// RMS norm along last axis
+struct RMSNormalizationOp : public NaryNodeOp {
+public:
+  RMSNormalizationOp(const std::vector<Expr>& nodes, float eps = 1e-9)
+      : NaryNodeOp(nodes), eps_(eps) {
+    // @TODO: dimension check
+  }
+
+  NodeOps forwardOps() override {
+    return {NodeOp(
+        RMSNormalization(val_,
+                         child(0)->val(),
+                         child(1)->val(),
+                         (children_.size() == 3) ? child(2)->val() : nullptr,
+                         eps_))};
+  }
+
+  // @BUGBUG: backward has not been tested for broadcasting gamma/beta
+  NodeOps backwardOps() override {
+    return {NodeOp(
+      RMSNormalizationGrad(
+        graph()->allocator(),
+        child(0)->grad(),
+        child(1)->grad(),
+        (children_.size() == 3) ? child(2)->grad() : nullptr,
+        adj_,
+        val_,
+        child(0)->val(),
+        child(1)->val(),
+        (children_.size() == 3) ? child(2)->val() : nullptr,
+        eps_))};
+  }
+
+  const std::string type() override { return "rms_normalization"; }
+
+  virtual size_t hash() override {
+    size_t seed = NaryNodeOp::hash();
+    util::hash_combine(seed, eps_);
+    return seed;
+  }
+
+  virtual bool equal(Expr node) override {
+    if(!NaryNodeOp::equal(node))
+      return false;
+    auto cnode = std::dynamic_pointer_cast<RMSNormalizationOp>(node);
+    if(!cnode)
+      return false;
+    if(eps_ != cnode->eps_)
+      return false;
+    return true;
+  }
+
+private:
+  friend class SerializationHelpers; // @TODO: use the same name for this as SqrtNodeOp
+  float eps_;
+};
+
 
 struct HighwayNodeOp : public NaryNodeOp {
   HighwayNodeOp(const std::vector<Expr>& nodes) : NaryNodeOp(nodes) {}
