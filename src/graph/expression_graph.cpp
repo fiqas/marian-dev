@@ -10,7 +10,9 @@ namespace marian {
 inline void timeOpPrint(std::chrono::time_point<std::chrono::steady_clock>& start, std::chrono::time_point<std::chrono::steady_clock>& end, Expr input, std::string direction="forward") {
   std::thread::id this_id = std::this_thread::get_id();
   std::chrono::duration<double> elapsed_seconds = end-start;
-  std::cerr << this_id << " " << direction << " Elapsed time: " << elapsed_seconds.count() << " s: " << input->name() << " " << input->shape() << std::endl;;
+  std::string vChildren = "";
+  for(auto& child : input->children()) vChildren += child->name() + " ";
+  std::cerr << this_id << " " << direction << " Elapsed time: " << elapsed_seconds.count() << " node: " << input->name() << " children: " << vChildren << " " << input->shape() << std::endl;;
 }
 
 ExpressionGraph::ExpressionGraph(bool inference)
@@ -149,6 +151,10 @@ void ExpressionGraph::forward(std::list<Expr>& forwardTape, bool finalPass) {
       }
     }
 
+    auto end = std::chrono::steady_clock::now();
+    timeOpPrint(start, end, v);
+    forwardTape.pop_front();
+    
     if(inferenceOnly_)
       v->children().clear();
 
@@ -165,9 +171,6 @@ void ExpressionGraph::forward(std::list<Expr>& forwardTape, bool finalPass) {
         }
       }
     }
-    auto end = std::chrono::steady_clock::now();
-    timeOpPrint(start, end, v);
-    forwardTape.pop_front();
   }
 }
 
