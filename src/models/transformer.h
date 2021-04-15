@@ -292,13 +292,15 @@ public:
     // multiplicative attention with flattened softmax
     float scale = 1.0f / std::sqrt((float)dk); // scaling to avoid extreme values due to matrix multiplication
     auto z = bdot(q, k, false, true, scale); // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
+    z->set_name(prefix + "_A");
 
     // mask out garbage beyond end of sequences
     z = z + mask;
 
     // take softmax along src sequence axis (-1)
-    auto weights = softmax(z); // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length]
-     
+    auto weights = softmax(z); // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: max src length] 
+    weights->set_name(prefix + "_S");
+
     if(inference_ && opt<bool>("transformer-head-print")) {
       Expr binMask;
       Expr transBinMask;
@@ -332,6 +334,7 @@ public:
 
     // apply attention weights to values
     auto output = bdot(weights, v);   // [-4: beam depth * batch size, -3: num heads, -2: max tgt length, -1: split vector dim]
+    output->set_name(prefix + "_B");
 
     return output;
   }
@@ -352,6 +355,7 @@ public:
     auto bq = graph_->param(prefix + "_bq", {       1, dimHeads * dimHeadSize}, inits::zeros());
     
     auto qh = affine(q, Wq, bq);
+    qh->set_name(prefix + "_Q");
     qh = SplitHeads(qh, dimHeads); // [-4: beam depth * batch size, -3: num heads, -2: max length, -1: split vector dim]
 
     Expr kh;
@@ -368,6 +372,7 @@ public:
       auto bk = graph_->param(prefix + "_bk", {1,        dimHeads * dimHeadSize}, inits::zeros());
 
       kh = affine(keys, Wk, bk);     // [-4: beam depth, -3: batch size, -2: max length, -1: vector dim]
+      kh->set_name(prefix + "_K");
       kh = SplitHeads(kh, dimHeads); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
       cache_[prefix + "_keys"] = kh;
     }
@@ -382,6 +387,7 @@ public:
       auto bv = graph_->param(prefix + "_bv", {1,        dimHeads * dimHeadSize}, inits::zeros());
 
       vh = affine(values, Wv, bv); // [-4: batch size, -3: num heads, -2: max length, -1: split vector dim]
+      vh->set_name(prefix + "_V");
       vh = SplitHeads(vh, dimHeads);
       cache_[prefix + "_values"] = vh;
     }
@@ -401,6 +407,7 @@ public:
       auto Wo = graph_->param(prefix + "_Wo", {dimAtt, dimOut}, inits::glorotUniform(true, true, depthScaling_ ? 1.f / sqrtf((float)depth_) : 1.f));
       auto bo = graph_->param(prefix + "_bo", {1, dimOut}, inits::zeros());
       output = affine(output, Wo, bo);
+      output->set_name(prefix + "_O");
     }
 
     return output;
