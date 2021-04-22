@@ -256,13 +256,13 @@ void ConfigParser::addOptionsModel(cli::CLIWrapper& cli) {
 		 "Load number of heads from model.npz.{decoder,encoder}_pruning.yml");
   cli.add<std::vector<int>>("--transformer-encoder-heads",
 		      "Number of heads in encoder self-attention (transformer)",
-		      {8, 8, 8, 8, 8, 8});
+		      {8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8});
   cli.add<std::vector<int>>("--transformer-decoder-heads",
 		      "Number of heads in decoder self-attention (transformer)",
-		      {8, 8, 8, 8, 8, 8});
+		      {8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8});
   cli.add<std::vector<int>>("--transformer-context-heads",
 		      "Number of heads in encoder-decoder context attention (transformer)",
-		      {8, 8, 8, 8, 8, 8});
+		      {8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8});
   cli.add<bool>("--transformer-head-print",
 		      "Print statistics in multi-head attention (transformer), for lottery ticket pruning.");
   cli.add<bool>("--transformer-tied-ffn",
@@ -274,12 +274,12 @@ void ConfigParser::addOptionsModel(cli::CLIWrapper& cli) {
   cli.add<int>("--transformer-dim-ffn",
       "Size of position-wise feed-forward network (transformer)",
       2048);
-  cli.add<std::vector<int>>("--transformer-dim-enc-selected-ffn",
+  cli.add<std::vector<int>>("--transformer-enc-ffn-dim",
       "Sizes of feed-forward network in encoder (sliced beforehand) (transformer)",
-      {1536, 1536, 1536, 1536, 1536, 1536});
-  cli.add<std::vector<int>>("--transformer-dim-dec-selected-ffn",
+      {1536, 1536, 1536, 1536, 1536, 1536, 1536, 1536, 1536, 1536, 1536, 1536});
+  cli.add<std::vector<int>>("--transformer-dec-ffn-dim",
       "Sizes of feed-forward network in decoder (sliced beforehand) (transformer)",
-      {1536, 1536, 1536, 1536, 1536, 1536});
+      {1536, 1536, 1536, 1536, 1536, 1536, 1536, 1536, 1536, 1536, 1536, 1536});
   cli.add<int>("--transformer-ffn-depth",
       "Depth of filters (transformer)",
       2);
