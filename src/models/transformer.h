@@ -107,8 +107,8 @@ public:
       LOG_ONCE(info, "WHY IS GRAPH EMPTY IN A TRANSFORMER CONSTRUCTOR???");
     }
     if (!inference_) {
-      auto lambdas = options_->get<std::vector<float>>("regulariser-scalar");
-      auto types = options_->get<std::vector<std::string>>("regulariser-type");
+      auto lambdas = options->get<std::vector<float>>("regulariser-scalar");
+      auto types = options->get<std::vector<std::string>>("regulariser-type");
       ABORT_IF(types.size() != lambdas.size(), "Every regulariser needs its own lambda!");
       for (int i = 0; i < types.size(); i++) {
         LOG_ONCE(info, "lambdas {} types {}", lambdas[i], types[i]);
@@ -404,7 +404,7 @@ public:
       auto pruneFlags = opt<std::string>("regulariser-flags"); // flags = edfh enc dec ffn heads
       pruneAtt = (pruneFlags.find("h") != std::string::npos); // prune if heads activated
 
-      auto regTypes = options_->get<std::vector<std::string>>("regulariser-type");
+      auto regTypes = opt<std::vector<std::string>>("regulariser-type");
       // if rowcol and heads activated at the same time, just don't do rowcol on attention and heads on ffn
       skipRowcol = (std::find(regTypes.begin(), regTypes.end(), "rowcol") != regTypes.end() &&
                         std::find(regTypes.begin(), regTypes.end(), "heads") != regTypes.end());
